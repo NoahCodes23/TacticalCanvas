@@ -36,6 +36,8 @@ class Player:
     home_y: float
     edited: bool = False  # True once a coach has dragged this player
 
+
+class MatchTracks:
     """Wraps the .npz that prepare_match.py writes."""
 
     def __init__(
