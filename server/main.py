@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import match_data
-from .coach import CoachServiceError, request_coach_advice
+from .coach import CoachServiceError, request_coach_advice, resolve_api_key, resolve_model
 from .protocol import PROTOCOL_VERSION, Envelope, server_message
 from .state import AppState, now_ms
 
@@ -164,11 +164,11 @@ async def coach_advice():
     """Analyze five recent paused snapshots without exposing the API key."""
     if state.playing:
         raise HTTPException(409, "Pause the match before requesting coach advice.")
-    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    api_key = resolve_api_key()
     if not api_key:
-        raise HTTPException(503, "OPENROUTER_API_KEY is not configured in .env.")
+        raise HTTPException(503, "No coach API key configured. Set OPENAI_API_KEY in .env.")
 
-    model = os.environ.get("OPENROUTER_MODEL", "").strip() or None
+    model = resolve_model()
     cache_key = (state.match_id, state.frame_index, state.revision, model)
     cached = coach_advice_cache.get(cache_key)
     if cached is not None:

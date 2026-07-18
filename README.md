@@ -87,30 +87,39 @@ Its scoring implementation lives entirely in
 `server/analytics/experimental.py`, so a learned completion model or xT grid can
 replace it later without changing the WebSocket data or pitch renderer.
 
-## LLM coach advice with OpenRouter
+## LLM coach advice
 
 When playback is paused, the dashboard shows **Get LLM coach advice** directly
 under the pause/resume control. One request captures five snapshots spaced 400
 ms apart (`-1.6s`, `-1.2s`, `-0.8s`, `-0.4s`, and now), plus the three most
 recent recorded match events. It calculates the full experimental analysis for
-each snapshot and asks Tencent Hy3 to translate that tiny lead-in into concise,
-player-specific coaching instructions. The coaching prompt limits the response
-to 4-6 short sentences under 100 words, with no headings or metric dump.
+each snapshot, collapses each to a compact **briefing** (see
+`server/analytics/briefing.py`), and asks the coach model to translate that tiny
+lead-in into concise, player-specific instructions. Each briefing carries a
+`facts` list, and the prompt permits the model to state **only** numbers that
+appear there — the whitelist that keeps it from inventing stats. The prompt also
+limits the response to 4-6 short sentences under 100 words, with no headings or
+metric dump.
 
-Copy `.env.example` to `.env` and add your OpenRouter key:
+Copy `.env.example` to `.env` and add your OpenAI key:
 
 ```dotenv
-OPENROUTER_API_KEY=your-key-here
-OPENROUTER_MODEL=tencent/hy3:free
+OPENAI_API_KEY=your-key-here
+# TC_COACH_MODEL=gpt-4.1-mini   # optional; this is the default
 ```
+
+The backend is provider-agnostic: point `TC_COACH_BASE_URL` (and the matching
+key) at any OpenAI-compatible endpoint — DeepSeek, Groq, Together, Ollama, or
+OpenRouter — to switch models without code changes. When the base URL is
+OpenRouter, requests keep its Zero Data Retention routing (`provider.zdr=true`)
+and attribution headers automatically.
 
 Restart TacticalCanvas after changing `.env`. The browser calls the local
 `/api/coach-advice` endpoint; only the Python server reads the key. Advice is
 cached for the same match frame and state revision to avoid duplicate paid
 requests. The LLM receives model data, not video images, and is explicitly told
 that the underlying indicators are experimental heuristics rather than
-validated predictions. Every request also enforces OpenRouter Zero Data
-Retention routing with `provider.zdr=true`.
+validated predictions.
 
 ### Git safety
 

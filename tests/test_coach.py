@@ -26,8 +26,8 @@ class CoachAdviceTests(unittest.TestCase):
         self.assertEqual(payload["frames"], frames)
         self.assertEqual(payload["window"]["snapshotSpacingMs"], 400)
 
-    def test_default_model_is_requested_hy3_free_model(self):
-        self.assertEqual(DEFAULT_MODEL, "tencent/hy3:free")
+    def test_default_model_is_openai_gpt_4_1_mini(self):
+        self.assertEqual(DEFAULT_MODEL, "gpt-4.1-mini")
 
     def test_state_returns_five_evenly_spaced_snapshots(self):
         state = AppState()
@@ -63,10 +63,18 @@ class CoachAdviceTests(unittest.TestCase):
         payload = json.loads(messages[1]["content"].split("\n\n", 1)[1])
         self.assertEqual(payload["recentEvents"], [event])
 
-    def test_every_openrouter_request_enforces_zdr(self):
+    def test_openai_request_has_no_provider_flag(self):
+        # OpenAI (the default) rejects OpenRouter's provider field, so it must
+        # be absent for the default base URL.
         body = build_request_body([], "Test Match", DEFAULT_MODEL)
+        self.assertNotIn("provider", body)
+        self.assertEqual(body["max_tokens"], 250)
+
+    def test_openrouter_base_url_still_enforces_zdr(self):
+        body = build_request_body(
+            [], "Test Match", DEFAULT_MODEL, base_url="https://openrouter.ai/api/v1"
+        )
         self.assertEqual(body["provider"], {"zdr": True})
-        self.assertEqual(body["max_completion_tokens"], 250)
 
 
 if __name__ == "__main__":

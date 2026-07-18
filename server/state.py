@@ -4,6 +4,7 @@ from collections import deque
 from types import SimpleNamespace
 
 from . import match_data
+from .analytics.briefing import build_briefing
 from .analytics.experimental import analyze as analyze_experimental
 from .analytics.formation import detect_formation
 from .analytics.reach import reach_polygon
@@ -336,7 +337,14 @@ class AppState:
 
     @staticmethod
     def analyze_coach_frames(frames: list[dict]) -> list[dict]:
-        """Calculate the complete tactical model for a captured frame window."""
+        """Reduce a captured frame window to compact per-frame coach briefings.
+
+        Runs the full tactical model on each snapshot, then collapses it through
+        build_briefing so the LLM receives only a small, ranked summary whose
+        ``facts`` list is the whitelist of numbers it may quote. Raw player
+        coordinates are deliberately dropped here: if the model can't see a
+        number, it can't invent a stat from it. The coaching side is the team
+        without the ball (the demo is about fixing a goal conceded)."""
         analyzed: list[dict] = []
         newest_time = frames[-1]["mediaTimeMs"] if frames else 0.0
         for frame in frames:
@@ -352,10 +360,14 @@ class AppState:
                 receiver_target_limit=None,
                 include_hold_targets=True,
             )
+            coaching_team = "away" if frame["possession"] == "home" else "home"
+            briefing = build_briefing(indicators, coaching_team, PITCH_LENGTH, PITCH_WIDTH)
             analyzed.append({
-                **frame,
+                "frameIndex": frame["frameIndex"],
+                "mediaTimeMs": frame["mediaTimeMs"],
                 "relativeTimeMs": round(frame["mediaTimeMs"] - newest_time, 1),
-                "analysis": indicators,
+                "possession": frame["possession"],
+                "briefing": briefing,
             })
         return analyzed
 
