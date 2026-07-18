@@ -535,7 +535,7 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                         continue     
                     seen.add(hand_id)
 
-                    pointer, pinch_ratio, index_is_primary = pinch_pointer(
+                    pointer, pinch_ratio, world_pinch_ratio = pinch_pointer(
                         landmarks, w, h, world_landmarks
                     )
                     bx, by = calib.to_board(*pointer, frame_size=(w, h))
@@ -551,7 +551,7 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                         (bx, by),
                         pinch_ratio,
                         completed_perf,
-                        index_is_primary=index_is_primary,
+                        world_pinch_ratio=world_pinch_ratio,
                     )
                     if etype and tracker.board:
                         emit({

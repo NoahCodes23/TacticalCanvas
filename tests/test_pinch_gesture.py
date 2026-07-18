@@ -28,51 +28,67 @@ def landmarks(
 
 class PinchGestureTests(unittest.TestCase):
     def test_pointer_is_midpoint_of_thumb_and_index_tips(self):
-        pointer, ratio, index_primary = pinch_pointer(
+        pointer, ratio, world_ratio = pinch_pointer(
             landmarks(0.30, 0.50), 200, 100
         )
         self.assertEqual(pointer, (80.0, 30.0))
-        self.assertGreater(ratio, 0.58)
-        self.assertTrue(index_primary)
+        self.assertGreater(ratio, 0.72)
+        self.assertIsNone(world_ratio)
 
-        pinched_pointer, pinched_ratio, index_primary = pinch_pointer(
+        pinched_pointer, pinched_ratio, world_ratio = pinch_pointer(
             landmarks(0.39, 0.41), 200, 100
         )
         self.assertEqual(pinched_pointer, (80.0, 30.0))
         self.assertLess(pinched_ratio, ratio)
-        self.assertTrue(index_primary)
+        self.assertIsNone(world_ratio)
 
-    def test_world_landmarks_make_pinch_independent_of_image_scale(self):
-        near_image = landmarks(0.30, 0.50)
-        far_image = landmarks(0.47, 0.53)
-        world = landmarks(0.39, 0.41)
-
-        _, near_ratio, _ = pinch_pointer(near_image, 200, 100, world)
-        _, far_ratio, _ = pinch_pointer(far_image, 200, 100, world)
-
-        self.assertAlmostEqual(near_ratio, far_ratio)
-
-    def test_middle_finger_contact_does_not_start_a_grab(self):
+    def test_visibly_closed_pinch_wins_when_world_estimate_is_open(self):
+        image = landmarks(
+            0.39, 0.41, middle_x=0.405, ring_x=0.60, pinky_x=0.70
+        )
+        world = landmarks(0.30, 0.50)
+        _, image_ratio, world_ratio = pinch_pointer(image, 200, 100, world)
         tracker = HandTracker("Right")
-        middle_pinch = landmarks(
-            0.40, 0.48, middle_x=0.405, ring_x=0.60, pinky_x=0.70
-        )
-        _, ratio, index_primary = pinch_pointer(middle_pinch, 200, 100)
 
-        self.assertFalse(index_primary)
+        self.assertLess(image_ratio, 0.45)
+        self.assertGreater(world_ratio, 0.58)
         self.assertEqual(
-            tracker.update(
-                (0.5, 0.5), ratio, 1.00, index_is_primary=index_primary
-            ),
+            tracker.update((0.5, 0.5), image_ratio, 1.00, world_ratio),
             "hover",
         )
         self.assertEqual(
-            tracker.update(
-                (0.5, 0.5), ratio, 1.01, index_is_primary=index_primary
-            ),
-            "hover",
+            tracker.update((0.5, 0.5), image_ratio, 1.01, world_ratio),
+            "grab_start",
         )
-        self.assertFalse(tracker.grabbing)
+
+    def test_world_estimate_only_resolves_an_ambiguous_visible_pinch(self):
+        image = landmarks(0.36, 0.47)
+        world = landmarks(0.39, 0.41)
+        _, image_ratio, world_ratio = pinch_pointer(image, 200, 100, world)
+        tracker = HandTracker("Right")
+
+        self.assertGreater(image_ratio, 0.45)
+        self.assertLess(image_ratio, 0.72)
+        self.assertLess(world_ratio, 0.38)
+        tracker.update((0.5, 0.5), image_ratio, 1.00, world_ratio)
+        self.assertEqual(
+            tracker.update((0.5, 0.5), image_ratio, 1.01, world_ratio),
+            "grab_start",
+        )
+
+    def test_visibly_open_pinch_releases_when_world_estimate_is_closed(self):
+        tracker = HandTracker("Right")
+        tracker.update((0.5, 0.5), 0.2, 1.00, 0.2)
+        tracker.update((0.5, 0.5), 0.2, 1.01, 0.2)
+
+        for frame in range(3):
+            self.assertEqual(
+                tracker.update((0.5, 0.5), 0.9, 1.02 + frame / 100, 0.2),
+                "grab_move",
+            )
+        self.assertEqual(
+            tracker.update((0.5, 0.5), 0.9, 1.05, 0.2), "grab_end"
+        )
 
     def test_close_pinch_grabs_and_open_pinch_releases(self):
         tracker = HandTracker("Right")
