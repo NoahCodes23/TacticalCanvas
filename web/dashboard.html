@@ -82,6 +82,28 @@
     #team-picker.away #team-swatch { background: #fb7185; }
     #team-picker.away #team-name { color: #fb7185; }
     #switch-team { margin-left: auto; width: auto; padding: 4px 10px; }
+
+    /* Coach persona carousel. A revolving picker of playstyles (aggressive,
+       defensive, ...) that reshape the LLM coach's advice. The accent colour
+       comes from the active persona and is applied inline in JS. */
+    #coach-carousel { display: flex; align-items: center; gap: 8px; margin: 0 0 8px;
+                      padding: 8px; border: 1px solid #334155; border-radius: 8px;
+                      background: #0f1622; transition: border-color .18s; }
+    #coach-carousel .arrow { flex: none; width: 28px; padding: 6px 0; margin: 0;
+                             text-align: center; font-size: 15px; line-height: 1;
+                             border-radius: 6px; background: #16212c; color: #c9d6e3; }
+    #coach-carousel .arrow:hover { background: #223142; }
+    #coach-face { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; }
+    #coach-emoji { font-size: 22px; line-height: 1; flex: none; }
+    #coach-text { min-width: 0; }
+    #coach-name { font: 700 13px system-ui, sans-serif; letter-spacing: .02em;
+                  transition: color .18s; }
+    #coach-tagline { margin-top: 1px; color: #7d8fa1; font-size: 10px; line-height: 1.3;
+                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #coach-dots { display: flex; justify-content: center; gap: 5px; margin: -2px 0 10px; }
+    #coach-dots i { width: 6px; height: 6px; border-radius: 50%; background: #2a3947;
+                    transition: background .18s, transform .18s; }
+    #coach-dots i.on { transform: scale(1.35); }
     table { width: 100%; border-collapse: collapse; font: 11px/1.6 ui-monospace, monospace; }
     td { padding: 1px 0; }
     td:last-child { text-align: right; color: #9fb3c8; }
@@ -317,6 +339,18 @@
       <div id="mic-status" class="sub">off · click to open the mic</div>
 
       <h2>LLM coach</h2>
+      <div id="coach-carousel" aria-label="Coach playstyle">
+        <button id="coach-prev" class="arrow" aria-label="Previous coach">‹</button>
+        <div id="coach-face">
+          <span id="coach-emoji">⚖️</span>
+          <div id="coach-text">
+            <div id="coach-name">Balanced</div>
+            <div id="coach-tagline">Pragmatic · pick the highest-percentage action</div>
+          </div>
+        </div>
+        <button id="coach-next" class="arrow" aria-label="Next coach">›</button>
+      </div>
+      <div id="coach-dots"></div>
       <div id="team-picker" class="home">
         <span id="team-swatch"></span>
         <span class="label">Coaching <b id="team-name">Blue</b></span>
@@ -695,8 +729,9 @@
         if (!response.ok) throw new Error(data.detail || "Coach advice request failed.");
         coachResultKey = `${data.matchId}:${data.frameIndex}:${data.revision}`;
         card.className = "on";
+        const coachTag = data.coachName ? `${data.coachName} · ` : "";
         $("coach-meta").textContent =
-          `${data.model} · ${data.frameCount} frames · frame ${data.frameIndex}${data.cached ? " · cached" : ""}`;
+          `${coachTag}${data.model} · ${data.frameCount} frames · frame ${data.frameIndex}${data.cached ? " · cached" : ""}`;
         // Keep model output inert: Markdown remains readable, but can never be
         // interpreted as HTML from an external response.
         $("coach-copy").textContent = data.advice;
@@ -729,6 +764,47 @@
       clearCoachAdvice();
       conn.send("TOGGLE_COACHING_TEAM");
     };
+
+    // ---------------------------------------------------------------------
+    // Coach persona carousel. Revolving picker of playstyles; each reshapes
+    // the LLM coach's advice (emphasis + tone). The server owns the choice, so
+    // the arrows just send SELECT_COACH and the render below follows state.
+    // Changing persona invalidates cached advice, so drop any stale card.
+    // ---------------------------------------------------------------------
+    const stepCoach = (dir) => {
+      const list = state?.availableCoaches;
+      if (!list || !list.length) return;
+      const cur = Math.max(0, list.findIndex((c) => c.id === state.activeCoach));
+      const next = list[(cur + dir + list.length) % list.length];   // wraps → revolving
+      if (next.id === state.activeCoach) return;
+      clearCoachAdvice();
+      conn.send("SELECT_COACH", { coachId: next.id });
+    };
+    $("coach-prev").onclick = () => stepCoach(-1);
+    $("coach-next").onclick = () => stepCoach(1);
+
+    let coachDotCount = 0;
+    function renderCoachCarousel() {
+      const list = state?.availableCoaches;
+      if (!list || !list.length) return;
+      const idx = Math.max(0, list.findIndex((c) => c.id === state.activeCoach));
+      const coach = list[idx];
+      $("coach-emoji").textContent = coach.emoji;
+      $("coach-name").textContent = coach.name;
+      $("coach-name").style.color = coach.accent;
+      $("coach-tagline").textContent = coach.tagline;
+      $("coach-carousel").style.borderColor = coach.accent;
+      const dotsEl = $("coach-dots");
+      if (coachDotCount !== list.length) {
+        dotsEl.replaceChildren(...list.map(() => document.createElement("i")));
+        coachDotCount = list.length;
+      }
+      [...dotsEl.children].forEach((dot, i) => {
+        const on = i === idx;
+        dot.classList.toggle("on", on);
+        dot.style.background = on ? coach.accent : "";
+      });
+    }
     $("calib").onclick = () => conn.send(
       state?.calibration?.active ? "CANCEL_CALIBRATION" : "START_CALIBRATION"
     );
@@ -1082,6 +1158,7 @@
       $("ai-freeze").textContent = state.playing ? "Freeze frame" : "Frame frozen";
       $("ai-freeze").classList.toggle("primary", !state.playing);
       updateExperimentalAnalysis();
+      renderCoachCarousel();
       const team = state.coachingTeam || "home";
       const picker = $("team-picker");
       picker.className = team;

@@ -3,7 +3,7 @@ import time
 from collections import deque
 from types import SimpleNamespace
 
-from . import match_data
+from . import coaches, match_data
 from .analytics.briefing import build_briefing
 from .analytics.experimental import analyze as analyze_experimental
 from .analytics.formation import detect_formation
@@ -95,6 +95,10 @@ class AppState:
         # this is a deliberate choice the coach makes and it sticks: advice is
         # always framed from this team, whoever currently has the ball.
         self.coaching_team = "home"
+        # The active coach persona (playstyle). Reshapes the LLM advice's
+        # emphasis and tone; see server/coaches.py. Like coaching_team, it is a
+        # deliberate, sticky choice rather than something inferred per frame.
+        self.coach_id = coaches.DEFAULT_COACH_ID
 
         self.players: list[Player] = match_data.build_players()
         self.ball = (PITCH_LENGTH / 2, PITCH_WIDTH / 2)
@@ -216,6 +220,19 @@ class AppState:
     def toggle_coaching_team(self) -> None:
         self.coaching_team = "away" if self.coaching_team == "home" else "home"
         self._bump()
+
+    def set_coach(self, coach_id: str) -> bool:
+        """Pick the coach persona (playstyle); return False for an unknown id.
+
+        Bumps the revision so any advice cached from the previous persona is
+        invalidated (the coach-advice cache key carries both the revision and
+        the coach id)."""
+        if coaches.get_coach(coach_id) is None:
+            return False
+        if coach_id != self.coach_id:
+            self.coach_id = coach_id
+            self._bump()
+        return True
 
     def enter_edit_mode(self) -> None:
         if not self.edit_mode:
@@ -988,6 +1005,8 @@ class AppState:
             "shadowSeconds": self.shadow_seconds,
             "possession": self.possession,
             "coachingTeam": self.coaching_team,
+            "activeCoach": self.coach_id,
+            "availableCoaches": coaches.list_coaches(),
             "shadows": self.defender_shadows(),
             "matchId": self.match_id,
             "matchLabel": self.match_label,

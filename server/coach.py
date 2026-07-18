@@ -55,6 +55,30 @@ the main pressure or offside warning. Refer to players by team and shirt number
 only when the supplied data supports it. Use ordinary football language."""
 
 
+def compose_system_prompt(
+    style_prompt: str | None = None, persona_name: str | None = None
+) -> str:
+    """The base coaching prompt, optionally specialised by a chosen persona.
+
+    The persona only steers emphasis, risk appetite, and tone — it is appended
+    *after* the base prompt so every safety rule (especially the facts-only
+    numbers whitelist) is still in force and re-asserted here."""
+    if not style_prompt:
+        return SYSTEM_PROMPT
+    identity = f'You are "{persona_name}", ' if persona_name else "You are "
+    return (
+        SYSTEM_PROMPT
+        + "\n\nCOACHING PHILOSOPHY\n"
+        + identity
+        + "a coach with a distinct footballing philosophy. "
+        + style_prompt.strip()
+        + " Let this philosophy decide which actions you emphasise, how much risk "
+        "you accept, and how urgent you sound — but it never lets you invent "
+        "numbers. The rule that you may only state a figure that appears verbatim "
+        'in a "facts" entry still holds absolutely.'
+    )
+
+
 class CoachServiceError(RuntimeError):
     """A safe-to-display failure from the external coaching service."""
 
@@ -89,6 +113,9 @@ def build_messages(
     frames: list[dict[str, Any]],
     match_label: str | None,
     recent_events: list[dict[str, Any]] | None = None,
+    *,
+    style_prompt: str | None = None,
+    persona_name: str | None = None,
 ) -> list[dict[str, str]]:
     payload = {
         "match": match_label or "Unknown match",
@@ -102,7 +129,7 @@ def build_messages(
         "frames": frames,
     }
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": compose_system_prompt(style_prompt, persona_name)},
         {
             "role": "user",
             "content": "Analyze this paused tactical window and give coach advice.\n\n"
@@ -117,10 +144,19 @@ def build_request_body(
     model: str,
     recent_events: list[dict[str, Any]] | None = None,
     base_url: str | None = None,
+    *,
+    style_prompt: str | None = None,
+    persona_name: str | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model,
-        "messages": build_messages(frames, match_label, recent_events),
+        "messages": build_messages(
+            frames,
+            match_label,
+            recent_events,
+            style_prompt=style_prompt,
+            persona_name=persona_name,
+        ),
         "max_tokens": 250,
         "stream": False,
     }
@@ -137,6 +173,8 @@ async def request_coach_advice(
     api_key: str,
     model: str | None = None,
     recent_events: list[dict[str, Any]] | None = None,
+    style_prompt: str | None = None,
+    persona_name: str | None = None,
 ) -> dict[str, str]:
     base_url = default_base_url()
     chosen_model = (model or resolve_model()).strip()
@@ -147,7 +185,15 @@ async def request_coach_advice(
     if _is_openrouter(base_url):
         headers["HTTP-Referer"] = os.environ.get("OPENROUTER_SITE_URL", "http://localhost:8000")
         headers["X-Title"] = os.environ.get("OPENROUTER_APP_NAME", "TacticalCanvas")
-    body = build_request_body(frames, match_label, chosen_model, recent_events, base_url)
+    body = build_request_body(
+        frames,
+        match_label,
+        chosen_model,
+        recent_events,
+        base_url,
+        style_prompt=style_prompt,
+        persona_name=persona_name,
+    )
 
     try:
         timeout = httpx.Timeout(60.0, connect=10.0)

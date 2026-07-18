@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import ingest, match_data
+from . import coaches, ingest, match_data
 from .coach import CoachServiceError, request_coach_advice, resolve_api_key, resolve_model
 from .protocol import PROTOCOL_VERSION, Envelope, server_message
 from .state import AppState, now_ms
@@ -207,7 +207,11 @@ async def coach_advice():
         raise HTTPException(503, "No coach API key configured. Set OPENAI_API_KEY in .env.")
 
     model = resolve_model()
-    cache_key = (state.match_id, state.frame_index, state.revision, model, state.coaching_team)
+    coach_id = state.coach_id
+    cache_key = (
+        state.match_id, state.frame_index, state.revision, model,
+        state.coaching_team, coach_id,
+    )
     cached = coach_advice_cache.get(cache_key)
     if cached is not None:
         return JSONResponse({**cached, "cached": True})
@@ -223,6 +227,9 @@ async def coach_advice():
         coaching_team = state.coaching_team
         frames = await asyncio.to_thread(state.analyze_coach_frames, raw_frames, coaching_team)
         recent_events = match_data.recent_events(state.media_time_ms / 1000.0, 3)
+        # The persona is captured now, alongside the frame window, so the cache
+        # entry stays consistent even if the coach flips personas mid-request.
+        persona = coaches.get_coach(coach_id)
         try:
             result = await request_coach_advice(
                 frames,
@@ -230,6 +237,8 @@ async def coach_advice():
                 api_key=api_key,
                 model=model,
                 recent_events=recent_events,
+                style_prompt=persona.style_prompt if persona else None,
+                persona_name=persona.name if persona else None,
             )
         except CoachServiceError as error:
             raise HTTPException(502, str(error)) from error
@@ -242,6 +251,8 @@ async def coach_advice():
             "revision": state.revision,
             "matchId": state.match_id,
             "coachingTeam": coaching_team,
+            "coachId": coach_id,
+            "coachName": persona.name if persona else coach_id,
         }
         coach_advice_cache[cache_key] = response
         # Bound memory while keeping recent paid responses reusable.
@@ -545,6 +556,13 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
             return
     elif t == "TOGGLE_COACHING_TEAM":
         state.toggle_coaching_team()
+    elif t == "SELECT_COACH":
+        coach_id = p.get("coachId")
+        if not isinstance(coach_id, str) or not state.set_coach(coach_id):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"invalid coach {coach_id!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
     elif t == "TOGGLE_SUGGESTED":
         state.toggle_suggested()
     elif t == "SET_EXPERIMENT":
