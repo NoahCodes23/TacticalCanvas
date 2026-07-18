@@ -6,10 +6,10 @@ const COL_LINE = 0xe8f5e9;
 const COL_HOME = 0x38bdf8;
 const COL_AWAY = 0xfb7185;
 const COL_BALL = 0xfde047;
-const COL_CALIB = 0xff00ff;   
 const COL_AI_PASS = [0xfde047, 0x4ade80, 0xc084fc];
 const COL_AI_FAINT = 0x94a3b8;
 const COL_AI_TARGET = 0x22d3ee;
+const COL_DRAWING = 0xfbbf24;
 
 // Cross-fade length when possession turns over and the shadows change team.
 // Long enough to read as a deliberate handover, short enough that it has
@@ -17,7 +17,7 @@ const COL_AI_TARGET = 0x22d3ee;
 const SHADOW_FADE_MS = 350;
 
 export class PitchRenderer {
-  constructor(el, { showCalibration = true, quality = "sharp" } = {}) {
+  constructor(el, { showCalibration = true, quality = "sharp", fieldFill = 0.94 } = {}) {
     this.el = el;
     this.showCalibration = showCalibration;
     this.state = null;
@@ -30,6 +30,10 @@ export class PitchRenderer {
     const requestedScale = Number(params.get("renderScale"));
     this.renderScaleOverride = Number.isFinite(requestedScale) && requestedScale > 0
       ? Math.min(2, Math.max(1, requestedScale)) : null;
+    const requestedFieldFill = Number(params.get("fieldFill"));
+    this.fieldFill = Number.isFinite(requestedFieldFill) && requestedFieldFill > 0
+      ? Math.min(0.96, Math.max(0.65, requestedFieldFill))
+      : Math.min(0.96, Math.max(0.65, fieldFill));
     this.renderResolution = this._desiredResolution();
     // Pixi Text is rasterized into its own texture. Keeping those textures at
     // least 2x prevents small glyphs becoming blocky even in performance mode.
@@ -53,10 +57,13 @@ export class PitchRenderer {
     this.pitchLayer = new PIXI.Graphics();
     this.pitchControlLayer = new PIXI.Container();  // Voronoi shading, under everything
     this.overlayLayer = new PIXI.Graphics();
+    this.drawingLayer = new PIXI.Graphics();
     this.playersLayer = new PIXI.Container();
     this.cursorsLayer = new PIXI.Container();
+    this.calibrationLayer = new PIXI.Container();
     this.app.stage.addChild(this.pitchLayer, this.pitchControlLayer, this.overlayLayer,
-                            this.playersLayer, this.cursorsLayer);
+                            this.drawingLayer,
+                            this.playersLayer, this.cursorsLayer, this.calibrationLayer);
     this._initPitchControl();
 
     this.sprites = new Map();  
@@ -66,6 +73,7 @@ export class PitchRenderer {
     this.ballCur = { x: PITCH_L / 2, y: PITCH_W / 2 };
     this.geometryVersion = 0;
     this.overlayDirty = true;
+    this.drawingKey = "";
 
     this._layout();
     this._drawPitch();
@@ -105,11 +113,12 @@ export class PitchRenderer {
     const w = this.app.renderer.width / this.app.renderer.resolution;
     const h = this.app.renderer.height / this.app.renderer.resolution;
     const aspect = PITCH_L / PITCH_W;
-    let pw = w * 0.94, ph = pw / aspect;
-    if (ph > h * 0.94) { ph = h * 0.94; pw = ph * aspect; }
+    let pw = w * this.fieldFill, ph = pw / aspect;
+    if (ph > h * this.fieldFill) { ph = h * this.fieldFill; pw = ph * aspect; }
     this.L = { w, h, pw, ph, ox: (w - pw) / 2, oy: (h - ph) / 2, scale: pw / PITCH_L };
     this.geometryVersion++;
     this.overlayDirty = true;
+    this.drawingKey = "";
   }
 
   mx(m) { return this.L.ox + (m / PITCH_L) * this.L.pw; }
@@ -152,7 +161,7 @@ export class PitchRenderer {
     this.overlayDirty = false;
     const g = this.overlayLayer;
     g.clear();
-    if (this.showCalibration && this.state?.calibrationOverlay) this._drawCalibration(g);
+    this._syncCalibrationMarkers();
     // Shadows first: the offside line and the players read on top of them.
     if (this.state?.shadowOverlay) this._drawShadows(g);
     else {
@@ -170,6 +179,91 @@ export class PitchRenderer {
     else if (this._offsideLabels) this._offsideLabels.forEach((t) => (t.visible = false));
     if (this.state?.formationOverlay) this._drawFormation();
     else if (this._formationLabels) this._formationLabels.forEach((t) => (t.visible = false));
+    if (this.state?.suggestedOverlay) this._drawSuggestions(g);
+    else this._hideTextPool(this._suggestedLabels);
+  }
+
+  _drawAnnotations() {
+    const g = this.drawingLayer;
+    g.clear();
+    const lineWidth = Math.max(4, this.L.scale * 0.28);
+    for (const stroke of this.state?.drawings || []) {
+      const points = stroke.points || [];
+      if (points.length < 2) continue;
+      const screen = points.map((point) => ({
+        x: this.bx(point.boardX), y: this.by(point.boardY),
+      }));
+      g.lineStyle(lineWidth, COL_DRAWING, 0.94);
+      g.moveTo(screen[0].x, screen[0].y);
+      for (let i = 1; i < screen.length - 1; i++) {
+        const midpoint = {
+          x: (screen[i].x + screen[i + 1].x) / 2,
+          y: (screen[i].y + screen[i + 1].y) / 2,
+        };
+        g.quadraticCurveTo(screen[i].x, screen[i].y, midpoint.x, midpoint.y);
+      }
+      const end = screen[screen.length - 1];
+      g.lineTo(end.x, end.y);
+
+      if (!stroke.complete) continue;
+      let previous = screen[screen.length - 2];
+      for (let i = screen.length - 2; i >= 0; i--) {
+        previous = screen[i];
+        if (Math.hypot(end.x - previous.x, end.y - previous.y) >= lineWidth * 2) break;
+      }
+      const angle = Math.atan2(end.y - previous.y, end.x - previous.x);
+      const head = Math.max(12, this.L.scale * 1.15);
+      const wing = Math.PI * 0.78;
+      g.beginFill(COL_DRAWING, 0.98);
+      g.drawPolygon([
+        end.x, end.y,
+        end.x + Math.cos(angle + wing) * head,
+        end.y + Math.sin(angle + wing) * head,
+        end.x + Math.cos(angle - wing) * head,
+        end.y + Math.sin(angle - wing) * head,
+      ]);
+      g.endFill();
+    }
+  }
+
+  // Ghost circles at server-suggested off-ball positions. Team-coloured stroke,
+  // dashed guide from current spot -> ghost, small "+ΔPC" label. These are
+  // deliberately hollow so they don't compete with the solid player dots -- the
+  // read is "here's where you could be", not "here's a player."
+  _drawSuggestions(g) {
+    const suggestions = this.state?.suggestedPositions || [];
+    this._hideTextPool(this._suggestedLabels);
+    suggestions.forEach((s, index) => {
+      if (!s.current || !s.suggested) return;
+      const colour = s.team === "away" ? COL_AWAY : COL_HOME;
+      const x1 = this.mx(s.current.x),   y1 = this.my(s.current.y);
+      const x2 = this.mx(s.suggested.x), y2 = this.my(s.suggested.y);
+      const dx = x2 - x1, dy = y2 - y1;
+      const length = Math.hypot(dx, dy);
+      if (length < 1) return;
+      const ux = dx / length, uy = dy / length;
+      // dashed guide from current position toward ghost
+      const dash = Math.max(4, this.L.scale * 0.45);
+      g.lineStyle(Math.max(1.2, this.L.scale * 0.09), colour, 0.55);
+      for (let travelled = 0; travelled < length; travelled += dash * 1.8) {
+        const finish = Math.min(travelled + dash, length);
+        g.moveTo(x1 + ux * travelled, y1 + uy * travelled);
+        g.lineTo(x1 + ux * finish, y1 + uy * finish);
+      }
+      // hollow ghost circle at the suggested spot
+      const r = Math.max(6, this.L.scale * 0.85);
+      g.lineStyle(Math.max(1.8, this.L.scale * 0.14), colour, 0.85);
+      g.drawCircle(x2, y2, r);
+
+      const label = this._textFromPool("_suggestedLabels", index, {
+        fontFamily: "ui-monospace, monospace", fontSize: 12,
+        fill: colour, fontWeight: "bold", stroke: 0x071018, strokeThickness: 3,
+      });
+      label.visible = true;
+      label.style.fontSize = Math.max(11, this.L.scale * 0.75);
+      label.text = `#${s.playerNumber} +${(s.gain * 100).toFixed(0)}%`;
+      label.position.set(x2, y2 - r * 1.7);
+    });
   }
 
   _hideTextPool(pool) {
@@ -399,18 +493,38 @@ export class PitchRenderer {
     t.position.set(this.mx(0), this.my(0) - 4);
   }
 
-  _drawCalibration(g) {
-    const corners = [[0, 0], [1, 0], [1, 1], [0, 1]];
-    const r = Math.max(18, this.L.scale * 1.6);
-    corners.forEach(([cx, cy], i) => {
-      const x = this.bx(cx), y = this.by(cy);
-      g.lineStyle(4, COL_CALIB, 1);
-      g.drawCircle(x, y, r);
-      g.drawCircle(x, y, r * 0.45);
-      g.moveTo(x - r * 1.6, y); g.lineTo(x + r * 1.6, y);
-      g.moveTo(x, y - r * 1.6); g.lineTo(x, y + r * 1.6);
-      this._corner(i, x, y, r);
-    });
+  _syncCalibrationMarkers() {
+    const active = this.showCalibration && this.state?.calibrationOverlay;
+    this.calibrationLayer.visible = !!active;
+    if (!active) return;
+    const layout = this.state?.calibrationLayout || [];
+    const key = layout.map((marker) => marker.markerId).join(",");
+    if (this._calibrationLayoutKey !== key) {
+      this.calibrationLayer.removeChildren().forEach((child) => child.destroy());
+      this._calibrationMarkers = layout.map((marker) => {
+        const quiet = new PIXI.Graphics();
+        quiet.beginFill(0xffffff, 1);
+        quiet.drawRect(0, 0, 1, 1);
+        quiet.endFill();
+        const image = PIXI.Sprite.from(`/api/calibration/markers/${marker.markerId}.png`);
+        this.calibrationLayer.addChild(quiet, image);
+        return { marker, quiet, image };
+      });
+      this._calibrationLayoutKey = key;
+    }
+    for (const { marker, quiet, image } of this._calibrationMarkers || []) {
+      const x = this.bx(marker.x), y = this.by(marker.y);
+      const width = marker.width * this.L.pw;
+      const height = marker.height * this.L.ph;
+      const quietX = marker.quietX * this.L.pw;
+      const quietY = marker.quietY * this.L.ph;
+      quiet.position.set(x - quietX, y - quietY);
+      quiet.width = width + quietX * 2;
+      quiet.height = height + quietY * 2;
+      image.position.set(x, y);
+      image.width = width;
+      image.height = height;
+    }
   }
 
   // Offside line = x of the second-last defender on each team, on the half they
@@ -461,23 +575,6 @@ export class PitchRenderer {
     t.position.set(x, yTop - 4);
   }
 
-  _corner(i, x, y, r) {
-    if (!this._cornerLabels) {
-      this._cornerLabels = [0, 1, 2, 3].map(() => {
-        const t = this._makeText("", { fontFamily: "monospace", fontSize: 28,
-                                       fill: COL_CALIB, fontWeight: "bold" });
-        t.anchor.set(0.5);
-        this.overlayLayer.addChild(t);
-        return t;
-      });
-    }
-    const t = this._cornerLabels[i];
-    t.text = String(i + 1);
-    t.visible = true;
-    t.position.set(x + (i === 0 || i === 3 ? r * 2.2 : -r * 2.2),
-                   y + (i < 2 ? r * 2.2 : -r * 2.2));
-  }
-
   _frame() {
     this._syncDisplayResolution();
     const w = this.app.renderer.width / this.app.renderer.resolution;
@@ -489,11 +586,13 @@ export class PitchRenderer {
     }
     this.fps = this.app.ticker.FPS;
     if (this.overlayDirty) this._drawOverlay();
+    const drawingKey = `${this.geometryVersion}:${this.state?.drawingRevision || 0}`;
+    if (drawingKey !== this.drawingKey) {
+      this.drawingKey = drawingKey;
+      this._drawAnnotations();
+    }
     this._updatePitchControl();
     if (this.state) { this._frameplayers(); this._frameCursors(); }
-    if (this._cornerLabels && !(this.showCalibration && this.state?.calibrationOverlay)) {
-      this._cornerLabels.forEach((t) => (t.visible = false));
-    }
   }
 
   // Voronoi pitch control: each cell of a low-res grid takes on the team colour
@@ -644,15 +743,20 @@ export class PitchRenderer {
       }
       const x = this.bx(c.boardX), y = this.by(c.boardY);
       const r = Math.max(10, this.L.scale * 0.9);
-      const styleKey = `${this.geometryVersion}:${c.grabbing}`;
+      const styleKey = `${this.geometryVersion}:${c.grabbing}:${c.drawing}`;
       if (g.styleKey !== styleKey) {
         g.clear();
-        if (c.grabbing) {
+        if (c.drawing) {
+          g.beginFill(COL_DRAWING, 0.9);
+          g.drawCircle(0, 0, r * 0.38);
+          g.endFill();
+        } else if (c.grabbing) {
           g.beginFill(0xffffff, 0.85);
           g.drawCircle(0, 0, r * 0.55);
           g.endFill();
         }
-        g.lineStyle(3, 0xffffff, c.grabbing ? 1 : 0.6);
+        g.lineStyle(3, c.drawing ? COL_DRAWING : 0xffffff,
+                    c.drawing || c.grabbing ? 1 : 0.6);
         g.drawCircle(0, 0, r);
         g.moveTo(-r * 1.5, 0); g.lineTo(-r * 0.7, 0);
         g.moveTo(r * 0.7, 0); g.lineTo(r * 1.5, 0);
@@ -670,12 +774,13 @@ export class PitchRenderer {
   applyState(state) {
     const aiOverlay = state.experiments?.passRecommendations || state.experiments?.receiverTargets;
     const overlaysActive = state.calibrationOverlay || state.shadowOverlay
-      || state.offsideOverlay || state.formationOverlay || aiOverlay;
+      || state.offsideOverlay || state.formationOverlay || state.suggestedOverlay || aiOverlay;
     if (overlaysActive
         || this.state?.calibrationOverlay !== state.calibrationOverlay
         || this.state?.shadowOverlay !== state.shadowOverlay
         || this.state?.offsideOverlay !== state.offsideOverlay
         || this.state?.formationOverlay !== state.formationOverlay
+        || this.state?.suggestedOverlay !== state.suggestedOverlay
         || this.state?.experiments?.passRecommendations !== state.experiments?.passRecommendations
         || this.state?.experiments?.receiverTargets !== state.experiments?.receiverTargets) {
       this.overlayDirty = true;

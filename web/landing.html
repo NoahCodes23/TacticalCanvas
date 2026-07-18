@@ -17,7 +17,11 @@
 
     /* Drop zone. Grows the dashed border and swaps the tint when a file is
        being dragged over it -- the whole card is the target, not just the icon. */
-    #drop { position: relative; border: 2px dashed #2a3947; border-radius: 14px;
+    /* display:block is load-bearing -- a <label> is inline by default, which
+       ignores the vertical padding and fragments this dashed border across
+       line boxes instead of drawing one card. */
+    #drop { display: block; position: relative;
+            border: 2px dashed #2a3947; border-radius: 14px;
             padding: 44px 28px; text-align: center; background: #0d141b;
             transition: border-color .12s, background .12s; cursor: pointer; }
     #drop.hover { border-color: #38bdf8; background: #0f1c26; }
@@ -55,6 +59,38 @@
     li a .m { font: 11px ui-monospace, monospace; color: #7d8fa1; }
     .empty { color: #556472; font-size: 12px; font-style: italic; padding: 4px 2px; }
 
+    /* Ingest control lives in each upload row, plus a shared job panel below
+       the list. The panel is only visible while a job is in flight; it tails
+       the last few lines of the subprocess so the user sees YOLO / ByteTrack /
+       KMeans progress instead of a spinner-of-nothing. */
+    .up-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+    .up-row a { flex: 1; margin: 0; }
+    .up-row button { background: #16212c; border: 1px solid #2a3947; color: #7d8fa1;
+                     padding: 8px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;
+                     white-space: nowrap; }
+    .up-row button:hover:not(:disabled) { color: #e6edf3; border-color: #3a4c5e; }
+    .up-row button:disabled { opacity: .5; cursor: default; }
+
+    #jobs { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+    .job { border: 1px solid #2a3947; border-radius: 8px; padding: 10px 12px;
+           background: #0f1720; font-size: 12px; }
+    .job.success { border-color: #14532d; }
+    .job.failed  { border-color: #7f1d1d; }
+    .job .hd { display: flex; justify-content: space-between; align-items: center;
+               gap: 8px; margin-bottom: 6px; }
+    .job .hd .name { color: #e6edf3; font-weight: 600; overflow: hidden;
+                     text-overflow: ellipsis; white-space: nowrap; }
+    .job .hd .st { font: 11px ui-monospace, monospace; color: #7d8fa1; }
+    .job.success .hd .st { color: #22c55e; }
+    .job.failed .hd .st  { color: #f87171; }
+    .job pre { margin: 0; max-height: 120px; overflow: auto;
+               font: 11px ui-monospace, monospace; color: #7d8fa1;
+               background: #0a0f14; padding: 8px; border-radius: 4px;
+               white-space: pre-wrap; word-break: break-all; }
+    .job .cancel { background: transparent; border: 1px solid #2a3947; color: #7d8fa1;
+                   padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; }
+    .job .cancel:hover { color: #f87171; border-color: #7f1d1d; }
+
     .footer { margin-top: 40px; text-align: center; color: #556472; font-size: 12px; }
     .footer a { color: #7d8fa1; text-decoration: none; }
     .footer a:hover { color: #e6edf3; }
@@ -87,6 +123,7 @@
         <div>
           <h2>Previously uploaded</h2>
           <ul id="uploads"><li class="empty">Loading…</li></ul>
+          <div id="jobs"></div>
         </div>
         <div>
           <h2>Or pick a demo match</h2>
@@ -191,13 +228,131 @@
         ul.innerHTML = '<li class="empty">No uploads yet.</li>';
         return;
       }
+      const busyVideos = new Set(
+        Object.values(activeJobs)
+          .filter((j) => j.status === "pending" || j.status === "running")
+          .map((j) => j.videoName)
+      );
       for (const it of items) {
         const li = document.createElement("li");
+        li.className = "up-row";
         const a = document.createElement("a");
         a.href = `/dashboard?video=${encodeURIComponent(it.name)}`;
         a.innerHTML = `<span>${it.name}</span><span class="m">${fmtSize(it.size)}</span>`;
         li.appendChild(a);
+
+        // Ingest = run tools/prepare_video against this clip and register the
+        // resulting .npz as a scenario. Disabled while a job for this file is
+        // already running so a nervous user can't fire ten copies.
+        const btn = document.createElement("button");
+        btn.textContent = "Ingest as scenario";
+        if (busyVideos.has(it.name)) {
+          btn.disabled = true;
+          btn.textContent = "Ingesting…";
+        }
+        btn.addEventListener("click", (e) => {
+          e.preventDefault(); e.stopPropagation();
+          startIngest(it.name);
+        });
+        li.appendChild(btn);
         ul.appendChild(li);
+      }
+    }
+
+    // -------------------------------------------------------------------- //
+    // ingest jobs: one shared poller drives the UI for every in-flight job.
+    // Jobs are keyed by their server-issued id; ``activeJobs`` mirrors the
+    // /api/scenarios/ingest listing on each tick.
+    // -------------------------------------------------------------------- //
+    const activeJobs = {};             // id -> latest job dict from server
+    let ingestPollTimer = null;
+
+    async function startIngest(videoName) {
+      try {
+        const res = await fetch("/api/scenarios/ingest", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ videoName }),
+        });
+        if (!res.ok) {
+          const t = await res.text();
+          showError(`Ingest failed: ${res.status} ${t}`);
+          return;
+        }
+        const job = await res.json();
+        activeJobs[job.id] = job;
+        renderJobs();
+        loadLists();                   // re-render uploads to disable its button
+        ensureIngestPolling();
+      } catch (e) {
+        showError(`Ingest failed: ${e}`);
+      }
+    }
+
+    async function cancelIngest(jobId) {
+      try {
+        await fetch(`/api/scenarios/ingest/${jobId}`, { method: "DELETE" });
+      } catch (e) { /* poller will pick up the state either way */ }
+    }
+
+    function ensureIngestPolling() {
+      if (ingestPollTimer !== null) return;
+      ingestPollTimer = setInterval(pollJobs, 1000);
+      pollJobs();
+    }
+
+    async function pollJobs() {
+      try {
+        const res = await fetch("/api/scenarios/ingest");
+        const { items } = await res.json();
+        const seen = new Set();
+        let anyLive = false;
+        let anyFinishedNow = false;
+        for (const j of items) {
+          seen.add(j.id);
+          const prev = activeJobs[j.id];
+          activeJobs[j.id] = j;
+          if (j.status === "pending" || j.status === "running") anyLive = true;
+          if (prev && (prev.status === "pending" || prev.status === "running")
+              && (j.status === "success" || j.status === "failed" || j.status === "cancelled")) {
+            anyFinishedNow = true;
+          }
+        }
+        for (const id of Object.keys(activeJobs)) {
+          if (!seen.has(id)) delete activeJobs[id];
+        }
+        renderJobs();
+        if (anyFinishedNow) loadLists();      // refresh matches + uploads
+        if (!anyLive && ingestPollTimer !== null) {
+          clearInterval(ingestPollTimer); ingestPollTimer = null;
+        }
+      } catch (e) { /* transient; keep polling */ }
+    }
+
+    function renderJobs() {
+      const box = document.getElementById("jobs");
+      const jobs = Object.values(activeJobs).sort(
+        (a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+      box.innerHTML = "";
+      for (const j of jobs) {
+        const wrap = document.createElement("div");
+        wrap.className = `job ${j.status}`;
+        const tail = (j.log || []).slice(-6).join("\n");
+        const live = j.status === "pending" || j.status === "running";
+        wrap.innerHTML = `
+          <div class="hd">
+            <span class="name">${j.videoName} → ${j.matchId}.npz</span>
+            <span class="st">${j.status}${j.exitCode != null ? ` (rc ${j.exitCode})` : ""}</span>
+          </div>
+          <pre></pre>`;
+        wrap.querySelector("pre").textContent = tail || "(waiting for subprocess…)";
+        if (live) {
+          const c = document.createElement("button");
+          c.className = "cancel"; c.textContent = "cancel";
+          c.addEventListener("click", () => cancelIngest(j.id));
+          wrap.querySelector(".hd").appendChild(c);
+        }
+        box.appendChild(wrap);
       }
     }
     function renderMatches(items) {
@@ -217,6 +372,12 @@
       }
     }
     loadLists();
+    // Pick up any ingest jobs still running from a previous tab / reload.
+    pollJobs().then(() => {
+      if (Object.values(activeJobs).some((j) => j.status === "pending" || j.status === "running")) {
+        ensureIngestPolling();
+      }
+    });
   </script>
 </body>
 </html>

@@ -10,6 +10,27 @@ import cv2
 import numpy as np
 
 
+def field_warp_basis(points: np.ndarray) -> np.ndarray:
+    """Cubic 2D basis used for smooth lens residuals on the field plane."""
+
+    values = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    x, y = values[:, 0], values[:, 1]
+    return np.column_stack(
+        (
+            np.ones(len(values)),
+            x,
+            y,
+            x * x,
+            x * y,
+            y * y,
+            x * x * x,
+            x * x * y,
+            x * y * y,
+            y * y * y,
+        )
+    )
+
+
 @dataclass(frozen=True)
 class Point:
     x: float
@@ -121,3 +142,63 @@ class ProjectorCalibration:
 
 # Backwards-friendly name for code written against the first prototype.
 CalibrationResult = ProjectorCalibration
+
+
+@dataclass
+class FieldCalibration:
+    """Camera homography whose destination is the rendered football field."""
+
+    camera_size: Size
+    camera_index: int
+    camera_to_field: list[list[float]]
+    field_to_camera: list[list[float]]
+    reprojection_rmse: float
+    camera_jitter: float
+    markers_used: list[int]
+    correction_coefficients: list[list[float]] = field(default_factory=list)
+    camera_fps: float = 30.0
+    dictionary: str = "DICT_4X4_50"
+    version: int = 2
+    created_at: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.created_at:
+            self.created_at = datetime.now(UTC).isoformat()
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def correct_field_points(self, points: np.ndarray) -> np.ndarray:
+        """Apply the learned cubic lens residual after the base homography."""
+
+        values = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+        coefficients = np.asarray(self.correction_coefficients, dtype=np.float64)
+        if coefficients.shape != (2, 10):
+            return values.copy()
+        return values + field_warp_basis(values) @ coefficients.T
+
+    def camera_points_to_field(self, points: np.ndarray) -> np.ndarray:
+        source = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+        mapped = cv2.perspectiveTransform(
+            source.reshape(-1, 1, 2),
+            np.asarray(self.camera_to_field, dtype=np.float64),
+        ).reshape(-1, 2)
+        return self.correct_field_points(mapped)
+
+    def save(self, path: str | Path) -> Path:
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        temporary.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        temporary.replace(destination)
+        return destination
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> FieldCalibration:
+        data = dict(value)
+        data["camera_size"] = Size(**data["camera_size"])
+        return cls(**data)
+
+    @classmethod
+    def load(cls, path: str | Path) -> FieldCalibration:
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))

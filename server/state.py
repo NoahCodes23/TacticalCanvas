@@ -8,9 +8,14 @@ from .analytics.briefing import build_briefing
 from .analytics.experimental import analyze as analyze_experimental
 from .analytics.formation import detect_formation
 from .analytics.reach import reach_polygon
+from .analytics.suggested import suggested_positions
 from .match_data import PITCH_LENGTH, PITCH_WIDTH, Player
+from tactical_canvas.calibration.layout import create_field_marker_layout
 
-GRAB_RADIUS_M = 3.0
+# The rendered piece radius is roughly 1.15m. A 4m centre-to-centre capture
+# radius lets a pinch land about one piece diameter outside the marker and still
+# select the nearest unclaimed player, without reaching across normal spacing.
+GRAB_RADIUS_M = 4.0
 
 # A challenger must get this much closer to the ball than the team currently
 # credited with it before possession flips, so a 50/50 doesn't strobe the
@@ -35,6 +40,9 @@ EXPERIMENT_DEFAULTS = {
 COACH_RAW_HISTORY_FRAMES = 20
 COACH_SNAPSHOT_COUNT = 5
 COACH_SNAPSHOT_SPACING_FRAMES = 10  # 400 ms at the 25 Hz tracking rate
+DRAW_POINT_SPACING = 0.0025
+MAX_DRAWINGS = 24
+MAX_DRAWING_POINTS = 320
 
 
 def now_ms() -> float:
@@ -57,11 +65,24 @@ class AppState:
 
         self.edit_mode = False
         self.calibration_overlay = False
+        self.calibration_layout = [
+            placement.to_dict() for placement in create_field_marker_layout()
+        ]
+        self.calibration_status = {
+            "phase": "idle",
+            "active": False,
+            "progress": 0.0,
+            "visibleMarkers": 0,
+            "requiredMarkers": 6,
+        }
         self.offside_overlay = False
         self.compactness_overlay = False
         self.shadow_overlay = False
         self.pitch_control_overlay = False
         self.formation_overlay = False
+        self.suggested_overlay = False
+        self._suggested_cache_key = None
+        self._suggested_cache = []
         self.experiments = dict(EXPERIMENT_DEFAULTS)
         # Sized by the shape it draws rather than the number: 2s puts a standing
         # player's reach at ~8m, half of what the old 3s default drew. Reach is
@@ -81,6 +102,10 @@ class AppState:
 
         self.grabbed: dict[str, str] = {}
         self.cursors: dict[str, dict] = {}
+        self.drawings: list[dict] = []
+        self.active_drawings: dict[str, dict] = {}
+        self.drawing_revision = 0
+        self._next_drawing_id = 1
         self._experimental_cache_key: tuple | None = None
         self._experimental_cache: dict | None = None
         # Keep a cheap, raw tracking history at the native 25 Hz frame rate.
@@ -208,6 +233,7 @@ class AppState:
         if playing:
             self.edit_mode = False
             self.grabbed.clear()
+            self._clear_drawings()
         self._bump()
 
     def set_playback_time(self, media_time_ms: float, playing: bool | None = None) -> None:
@@ -220,6 +246,7 @@ class AppState:
         # distant moments would produce misleading coaching advice.
         if abs(next_frame_index - self.frame_index) > 2:
             self._coach_history.clear()
+            self._clear_drawings()
         self.media_time_ms = next_media_time_ms
         self.frame_index = next_frame_index
         self.external_clock_last_ms = now_ms()
@@ -237,6 +264,8 @@ class AppState:
             if self.playing and self.edit_mode:
                 self.edit_mode = False
                 self.grabbed.clear()
+            if self.playing:
+                self._clear_drawings()
             if was_playing != self.playing:
                 self._bump()
         self._bump()
@@ -244,6 +273,7 @@ class AppState:
     def reset_scenario(self) -> None:
         self.players = match_data.build_players()
         self.grabbed.clear()
+        self._clear_drawings()
         self.edit_mode = False
         self.playing = True
         self.media_time_ms = 0.0
@@ -262,6 +292,7 @@ class AppState:
         self.match_label = match_data.current_label()
         self.players = match_data.build_players()
         self.grabbed.clear()
+        self._clear_drawings()
         self.edit_mode = False
         self.calibration_overlay = False
         self.offside_overlay = False
@@ -269,6 +300,9 @@ class AppState:
         self.shadow_overlay = False
         self.pitch_control_overlay = False
         self.formation_overlay = False
+        self.suggested_overlay = False
+        self._suggested_cache_key = None
+        self._suggested_cache = []
         self.experiments = dict(EXPERIMENT_DEFAULTS)
         self._experimental_cache_key = None
         self._experimental_cache = None
@@ -395,7 +429,41 @@ class AppState:
         return analyzed
 
     def toggle_calibration(self) -> None:
-        self.calibration_overlay = not self.calibration_overlay
+        if self.calibration_overlay:
+            self.cancel_calibration()
+        else:
+            self.start_calibration()
+
+    def start_calibration(self) -> None:
+        self.calibration_overlay = True
+        self.calibration_status = {
+            "phase": "starting",
+            "active": True,
+            "progress": 0.0,
+            "visibleMarkers": 0,
+            "requiredMarkers": 6,
+        }
+        self.grabbed.clear()
+        self.cursors.clear()
+        self._bump()
+
+    def cancel_calibration(self) -> None:
+        self.calibration_overlay = False
+        self.calibration_status = {
+            **self.calibration_status,
+            "phase": "cancelled",
+            "active": False,
+        }
+        self._bump()
+
+    def fail_calibration(self, reason: str) -> None:
+        self.calibration_overlay = False
+        self.calibration_status = {
+            **self.calibration_status,
+            "phase": "failed",
+            "active": False,
+            "reason": reason,
+        }
         self._bump()
 
     def toggle_offside(self) -> None:
@@ -417,6 +485,35 @@ class AppState:
     def toggle_formation(self) -> None:
         self.formation_overlay = not self.formation_overlay
         self._bump()
+
+    def toggle_suggested(self) -> None:
+        self.suggested_overlay = not self.suggested_overlay
+        self._suggested_cache_key = None
+        self._bump()
+
+    def suggested_positions_snapshot(self) -> list[dict]:
+        """Ghost-position suggestions for the possession team. Empty when off.
+        Cached per (frame, revision, ball) so a paused edit that shifts a
+        defender re-runs it, but idle playback doesn't."""
+        if not self.suggested_overlay:
+            return []
+        cache_key = (
+            self.frame_index,
+            self.revision,
+            self.possession,
+            round(self.ball[0], 2),
+            round(self.ball[1], 2),
+        )
+        if cache_key != self._suggested_cache_key:
+            self._suggested_cache = suggested_positions(
+                self.players,
+                self.ball,
+                self.possession,
+                PITCH_LENGTH,
+                PITCH_WIDTH,
+            )
+            self._suggested_cache_key = cache_key
+        return self._suggested_cache
 
     def set_experiment(self, name: str, enabled: bool | None = None) -> bool:
         """Enable/toggle one allow-listed experiment; return False if unknown."""
@@ -537,8 +634,72 @@ class AppState:
         if self.grabbed.pop(owner, None) is not None:
             self._bump()
 
+    def _clear_drawings(self) -> None:
+        if not self.drawings and not self.active_drawings:
+            return
+        self.drawings.clear()
+        self.active_drawings.clear()
+        self.drawing_revision += 1
+        self._bump()
+
+    def _start_drawing(self, hand: str, bx: float, by: float) -> None:
+        if self.playing:
+            return
+        self._finish_drawing(hand)
+        stroke = {
+            "id": self._next_drawing_id,
+            "handId": hand,
+            "complete": False,
+            "points": [[bx, by]],
+        }
+        self._next_drawing_id += 1
+        self.drawings.append(stroke)
+        self.active_drawings[hand] = stroke
+        if len(self.drawings) > MAX_DRAWINGS:
+            removed = self.drawings.pop(0)
+            if self.active_drawings.get(removed["handId"]) is removed:
+                self.active_drawings.pop(removed["handId"], None)
+        self.drawing_revision += 1
+        self._bump()
+
+    def _move_drawing(self, hand: str, bx: float, by: float) -> None:
+        stroke = self.active_drawings.get(hand)
+        if stroke is None or self.playing:
+            return
+        points = stroke["points"]
+        last_x, last_y = points[-1]
+        if math.hypot(bx - last_x, by - last_y) < DRAW_POINT_SPACING:
+            return
+        if len(points) >= MAX_DRAWING_POINTS:
+            points.pop(1)
+        points.append([bx, by])
+        self.drawing_revision += 1
+        self._bump()
+
+    def _finish_drawing(self, hand: str) -> None:
+        stroke = self.active_drawings.pop(hand, None)
+        if stroke is None:
+            return
+        if len(stroke["points"]) < 2:
+            self.drawings.remove(stroke)
+        else:
+            stroke["complete"] = True
+        self.drawing_revision += 1
+        self._bump()
+
     def handle_vision_event(self, evt: dict) -> None:
         etype = evt.get("type")
+
+        if etype == "calibration_status":
+            self.calibration_status = {
+                **self.calibration_status,
+                **{key: value for key, value in evt.items() if key != "type"},
+            }
+            self.calibration_overlay = bool(self.calibration_status.get("active"))
+            if evt.get("calibrated"):
+                self.vision_stats["calibrated"] = True
+            self._bump()
+            return
 
         if etype == "vision_stats":
             received_at_ms = now_ms()
@@ -565,7 +726,14 @@ class AppState:
         if etype == "hand_lost":
             hand = evt.get("handId", "?")
             self.cursors.pop(hand, None)
+            self._finish_drawing(hand)
             self.drag_end(hand)
+            return
+
+        if self.calibration_status.get("active"):
+            # Async MediaPipe results submitted just before calibration started
+            # may arrive after the markers appear. Do not let those stale hand
+            # events repopulate cursors or move a piece during calibration.
             return
 
         hand = evt.get("handId", "?")
@@ -579,6 +747,7 @@ class AppState:
             "boardX": bx,
             "boardY": by,
             "grabbing": etype in ("grab_start", "grab_move"),
+            "drawing": not self.playing and etype in ("draw_start", "draw_move"),
             "confidence": evt.get("confidence", 0.0),
             "lastSeenMs": received_at_ms,
             "capturedAtMs": captured_at_ms,
@@ -586,7 +755,14 @@ class AppState:
             "captureToServerMs": capture_to_server_ms,
         }
 
-        if etype in ("grab_start", "grab_move"):
+        if etype == "draw_start":
+            self.drag_end(hand)
+            self._start_drawing(hand, bx, by)
+        elif etype == "draw_move":
+            self._move_drawing(hand, bx, by)
+        elif etype == "draw_end":
+            self._finish_drawing(hand)
+        elif etype in ("grab_start", "grab_move"):
             player_id = self.grabbed.get(hand)
             if player_id:
                 self.drag_move(player_id, bx, by, owner=hand)
@@ -628,6 +804,7 @@ class AppState:
                 "boardX": round(cursor["boardX"], 4),
                 "boardY": round(cursor["boardY"], 4),
                 "grabbing": cursor["grabbing"],
+                "drawing": cursor.get("drawing", False),
                 "confidence": round(cursor["confidence"], 2),
                 "capturedAtMs": round(cursor.get("capturedAtMs", 0.0), 2),
                 "inferenceMs": round(cursor.get("inferenceMs", 0.0), 2),
@@ -638,6 +815,19 @@ class AppState:
             for hand, cursor in self.cursors.items()
         ]
 
+    def _drawings_snapshot(self) -> list[dict]:
+        return [
+            {
+                "id": stroke["id"],
+                "complete": stroke["complete"],
+                "points": [
+                    {"boardX": round(point[0], 4), "boardY": round(point[1], 4)}
+                    for point in stroke["points"]
+                ],
+            }
+            for stroke in self.drawings
+        ]
+
     def vision_snapshot(self) -> dict:
         """Small state delta sent immediately for latency-sensitive hand input."""
         return {
@@ -646,7 +836,11 @@ class AppState:
             "editMode": self.edit_mode,
             "players": self._players_snapshot(),
             "cursors": self._cursors_snapshot(),
+            "drawings": self._drawings_snapshot(),
+            "drawingRevision": self.drawing_revision,
             "vision": self.vision_stats,
+            "calibrationOverlay": self.calibration_overlay,
+            "calibration": self.calibration_status,
             "serverTimestampMs": now_ms(),
         }
 
@@ -659,11 +853,15 @@ class AppState:
             "mediaTimeMs": round(self.media_time_ms, 1),
             "editMode": self.edit_mode,
             "calibrationOverlay": self.calibration_overlay,
+            "calibrationLayout": self.calibration_layout,
+            "calibration": self.calibration_status,
             "offsideOverlay": self.offside_overlay,
             "compactnessOverlay": self.compactness_overlay,
             "shadowOverlay": self.shadow_overlay,
             "pitchControlOverlay": self.pitch_control_overlay,
             "formationOverlay": self.formation_overlay,
+            "suggestedOverlay": self.suggested_overlay,
+            "suggestedPositions": self.suggested_positions_snapshot(),
             "experiments": dict(self.experiments),
             "experimentalAnalysis": self.experimental_analysis(),
             "formations": self.team_formations(),
@@ -675,10 +873,13 @@ class AppState:
             "matchLabel": self.match_label,
             "availableMatches": match_data.list_matches(),
             "events": match_data.recent_events(self.media_time_ms / 1000.0, 8),
+            "matchStats": match_data.match_stats(self.media_time_ms / 1000.0),
             "serverTimestampMs": now_ms(),
             "pitch": {"length": PITCH_LENGTH, "width": PITCH_WIDTH},
             "players": self._players_snapshot(),
             "ball": {"x": round(self.ball[0], 2), "y": round(self.ball[1], 2)},
             "cursors": self._cursors_snapshot(),
+            "drawings": self._drawings_snapshot(),
+            "drawingRevision": self.drawing_revision,
             "vision": self.vision_stats,
         }

@@ -41,6 +41,7 @@ import os
 import sys
 import time
 
+import httpx
 import websockets
 from fastmcp import Context, FastMCP
 
@@ -76,6 +77,14 @@ def _ws_url() -> str:
         return url
     port = os.environ.get("TC_PORT", "8000")
     return f"ws://localhost:{port}/ws"
+
+
+def _http_url() -> str:
+    """Base URL of the same board, for the REST endpoints (coach advice)."""
+    if base := os.environ.get("TC_HTTP_URL"):
+        return base.rstrip("/")
+    port = os.environ.get("TC_PORT", "8000")
+    return f"http://localhost:{port}"
 
 
 mcp = FastMCP("tacticalcanvas")
@@ -227,6 +236,33 @@ async def toggle_calibration() -> dict:
     on or off. Used when aligning the projector, not during tactical editing."""
     s = await _send_commands([_envelope("TOGGLE_CALIBRATION")])
     return {"calibrationOverlay": s["calibrationOverlay"]}
+
+
+@mcp.tool
+async def get_coach_advice() -> dict:
+    """Get tactical coaching advice about the current moment of the match. Call
+    this whenever the user asks what they should do, what is going wrong, how to
+    fix the shape, or for any read of the current situation. It analyses the last
+    five tracking snapshots plus recent match events and returns a few sentences
+    of sideline advice. The replay must be paused, so this pauses it for you."""
+    # /api/coach-advice rejects a playing match (409), and the coach cannot ask
+    # for the pause themselves mid-sentence. Pausing here makes "what should I do"
+    # a single utterance instead of two.
+    await _send_commands([_envelope("SET_PLAYING", {"playing": False})])
+
+    url = f"{_http_url()}/api/coach-advice"
+    timeout = httpx.Timeout(90.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(url)
+    if response.is_error:
+        detail = response.text[:200]
+        try:
+            detail = response.json().get("detail", detail)
+        except ValueError:
+            pass
+        raise RuntimeError(f"coach advice failed ({response.status_code}): {detail}")
+    data = response.json()
+    return {"advice": data.get("advice", ""), "model": data.get("model", "")}
 
 
 @mcp.tool
