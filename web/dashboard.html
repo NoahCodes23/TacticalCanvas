@@ -26,6 +26,27 @@
     td { padding: 1px 0; }
     td:last-child { text-align: right; color: #9fb3c8; }
     .ok { color: #4ade80; } .bad { color: #f87171; } .warnc { color: #fbbf24; }
+
+    /* Live match-event feed, newest first. Colour by event kind; the current
+       (top) event is highlighted, goals are unmistakable. */
+    #events { display: flex; flex-direction: column; gap: 3px;
+              max-height: 230px; overflow-y: auto; }
+    .ev { display: flex; align-items: center; gap: 7px; padding: 3px 7px;
+          border-radius: 5px; font-size: 12px; background: #111a22;
+          border-left: 2px solid transparent; }
+    .ev.newest { background: #17242f; border-left-color: #3a4c5e; }
+    .ev .clk { font: 10px ui-monospace, monospace; color: #6b7f92; min-width: 30px; }
+    .ev .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+    .ev .dot.home { background: #38bdf8; } .ev .dot.away { background: #fb7185; }
+    .ev .lab { font-weight: 600; color: #c9d6e3; }
+    .ev .det { margin-left: auto; color: #7d8fa1; font: 11px ui-monospace, monospace; }
+    .ev.k-goal { background: #3a2e05; border-left-color: #fbbf24; }
+    .ev.k-goal .lab { color: #fde047; }
+    .ev.k-shot .lab { color: #fb923c; }
+    .ev.k-setpiece .lab { color: #67e8f9; }
+    .ev.k-defense .lab { color: #6ee7b7; }
+    .ev.k-foul .lab { color: #fbbf24; }
+    .ev.k-pass .lab { color: #aebfce; font-weight: 500; }
   </style>
 </head>
 <body>
@@ -35,9 +56,16 @@
       <h1>TacticalCanvas</h1>
       <div class="sub">prototype · monocular gesture input</div>
 
+      <h2>Test matches</h2>
+      <div id="matches"></div>
+      <div class="sub">Loading a match rewinds to kickoff and clears edits.</div>
+
       <h2>Playback</h2>
       <button id="play" class="primary">⏸ Pause &amp; Edit</button>
       <button id="reset">↺ Reset scenario</button>
+
+      <h2>Match events</h2>
+      <div id="events"><div class="sub">waiting for kickoff…</div></div>
 
       <h2>Setup</h2>
       <button id="calib">◎ Calibration markers</button>
@@ -100,6 +128,58 @@
 
     const cls = (el, good) => (el.className = good ? "ok" : "bad");
 
+    // Test-match selector. Built from the server's availableMatches so the
+    // buttons always match what the backend can actually load (match_1..3).
+    // Clicking sends LOAD_MATCH; the server rewinds to kickoff and clears edits.
+    const matchesEl = $("matches");
+    let builtMatchKey = "";
+    function renderMatches() {
+      const matches = state?.availableMatches;
+      if (!matches) return;
+      const key = matches.map((m) => m.id).join(",");
+      if (key !== builtMatchKey) {
+        matchesEl.innerHTML = "";
+        for (const m of matches) {
+          const b = document.createElement("button");
+          b.textContent = m.label;
+          b.dataset.matchId = m.id;
+          b.onclick = () => conn.send("LOAD_MATCH", { matchId: m.id });
+          matchesEl.appendChild(b);
+        }
+        builtMatchKey = key;
+      }
+      for (const b of matchesEl.children) {
+        b.className = b.dataset.matchId === state.matchId ? "primary" : "";
+      }
+    }
+
+    // Live event feed, newest first, driven off the server's time-synced
+    // events slice. Rebuilt each tick (only ~8 rows, so cheap).
+    const eventsEl = $("events");
+    function renderMatchEvents() {
+      const evs = state?.events;
+      if (!evs) return;
+      if (!evs.length) {
+        eventsEl.innerHTML = '<div class="sub">waiting for kickoff…</div>';
+        return;
+      }
+      eventsEl.replaceChildren(...evs.map((e, i) => {
+        const row = document.createElement("div");
+        row.className = `ev k-${e.kind}${i === 0 ? " newest" : ""}`;
+        const clk = document.createElement("span");
+        clk.className = "clk"; clk.textContent = e.clock;
+        const dot = document.createElement("span");
+        dot.className = `dot ${e.team === "away" ? "away" : "home"}`;
+        const lab = document.createElement("span");
+        lab.className = "lab";
+        lab.textContent = (e.kind === "goal" ? "⚽ " : "") + e.label;
+        const det = document.createElement("span");
+        det.className = "det"; det.textContent = e.detail || "";
+        row.append(clk, dot, lab, det);
+        return row;
+      }));
+    }
+
     setInterval(() => {
       $("d-sock").textContent = conn.connected ? "open" : "closed";
       cls($("d-sock"), conn.connected);
@@ -109,6 +189,8 @@
       $("d-fps").textContent = renderer.fps.toFixed(0);
       if (!state) return;
 
+      renderMatches();
+      renderMatchEvents();
       $("d-rev").textContent = state.revision;
       $("d-frame").textContent = state.frameIndex;
       $("d-time").textContent = `${(state.mediaTimeMs / 1000).toFixed(1)} s`;

@@ -8,9 +8,10 @@ import cv2
 
 import mediapipe as mp
 import numpy as np
-from mediiapipe.tasks import python as mp_python
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
 
-HERE = os.path.dirname(os.path.abspath())
+HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 MODEL_PATH = os.path.join(ROOT, "hand_landmarker.task")
 CALIB_PATH = os.path.join(ROOT, "cache", "calibration.json")
@@ -30,7 +31,7 @@ HAND_LOST_FRAMES = 10
 
 BOARD_LIMIT = 3.0
 HAND_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4)
+    (0, 1), (1, 2), (2, 3), (3, 4),
     (0, 5), (5, 6), (6, 7), (7, 8),
     (5, 9), (9, 10), (10, 11), (11, 12),
     (9, 13), (13, 14), (14, 15), (15, 16),
@@ -39,7 +40,7 @@ HAND_CONNECTIONS = [
 ]
 
 CORNER_NAMES = ["TOP-LEFT", "TOP-RIGHT", "BOTTOM-RIGHT", "BOTTOM-LEFT"]
-BOARD_CORNERS = np.array([0, 0], [1, 0], [1, 1], [0, 1])
+BOARD_CORNERS = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
 
 class Calibration:
     def __init__(self) -> None:
@@ -62,7 +63,7 @@ class Calibration:
 
     def _solve(self) -> None:
         src = np.array(self.points, dtype=np.float32)
-        self.H = cb2.getPerspectiveTransform(src, BOARD_CORNERS)
+        self.H = cv2.getPerspectiveTransform(src, BOARD_CORNERS)
         self.collecting = False
         print("[vision] calibrated. press 's' to save.")
 
@@ -74,8 +75,8 @@ class Calibration:
 
     def to_board(self, px: float, py: float) -> tuple[float, float]:
         pt = np.array([[[px, py]]], dtype=np.float32)
-        out = cb2.perspectiveTransform(pt, self.H)
-        return float(out[0, 0, 0], float(out[0, 0, 1]))
+        out = cv2.perspectiveTransform(pt, self.H)
+        return float(out[0, 0, 0]), float(out[0, 0, 1])
 
     def save(self) -> None:
         if self.H is None:
@@ -186,9 +187,9 @@ def count_extended(world_landmarks) -> int:
     return n
 
 def open_camera(index: int) -> cv2.VideoCapture:
-    cap = cb2.VideoCapture(index, cv2.CAP_DSHOW)
+    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
     if not cap.isOpened():
-        raise RuntimeEror(f"Could not open camera{index}")
+        raise RuntimeError(f"Could not open camera {index}")
 
     return cap
 

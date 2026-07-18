@@ -12,6 +12,7 @@ CommandType = Literal[
     "DRAG_PLAYER_END",          # {playerId}
     "RESET_SCENARIO",           # {}
     "TOGGLE_CALIBRATION",       # {}
+    "LOAD_MATCH",               # {matchId}  -- switch the active test match
     "PING",                     # {t}  -- client clock, echoed back for RTT
 ]
 

@@ -25,6 +25,8 @@ class AppState:
 
         self.players: list[Player] = match_data.build_players()
         self.ball = (PITCH_LENGTH / 2, PITCH_WIDTH / 2)
+        self.match_id = match_data.current_id()
+        self.match_label = match_data.current_label()
 
         self.grabbed: dict[str, str] = {}
         self.cursors: dict[str, dict] = {}
@@ -95,6 +97,24 @@ class AppState:
         self.media_time_ms = 0.0
         self.frame_index = 0
         self._bump()
+
+    def load_match(self, match_id: str) -> bool:
+        """Switch the active test match; rewinds and clears any edits. Returns
+        False (state untouched) if the match couldn't be loaded."""
+        if not match_data.select(match_id):
+            return False
+        self.match_id = match_data.current_id()
+        self.match_label = match_data.current_label()
+        self.players = match_data.build_players()
+        self.grabbed.clear()
+        self.edit_mode = False
+        self.calibration_overlay = False
+        self.playing = True
+        self.media_time_ms = 0.0
+        self.frame_index = 0
+        self.ball = match_data.ball_position(0.0)
+        self._bump()
+        return True
 
     def toggle_calibration(self) -> None:
         self.calibration_overlay = not self.calibration_overlay
@@ -182,6 +202,10 @@ class AppState:
             "mediaTimeMs": round(self.media_time_ms, 1),
             "editMode": self.edit_mode,
             "calibrationOverlay": self.calibration_overlay,
+            "matchId": self.match_id,
+            "matchLabel": self.match_label,
+            "availableMatches": match_data.list_matches(),
+            "events": match_data.recent_events(self.media_time_ms / 1000.0, 8),
             "serverTimestampMs": now_ms(),
             "pitch": {"length": PITCH_LENGTH, "width": PITCH_WIDTH},
             "players": [

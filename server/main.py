@@ -176,6 +176,13 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         state.exit_edit_mode()
     elif t == "RESET_SCENARIO":
         state.reset_scenario()
+    elif t == "LOAD_MATCH":
+        match_id = p.get("matchId")
+        if not isinstance(match_id, str) or not state.load_match(match_id):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"could not load match {match_id!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
     elif t == "TOGGLE_CALIBRATION":
         state.toggle_calibration()
     elif t == "DRAG_PLAYER_START":
