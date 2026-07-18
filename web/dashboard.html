@@ -99,6 +99,7 @@
       <button id="shadows">◈ Defender shadows</button>
       <button id="shadowsec">⏱ Reach horizon · 2.0s</button>
       <button id="pitchctrl">▦ Pitch control</button>
+      <button id="formation">◇ Formation detect</button>
 
       <h2>Match events</h2>
       <div id="events"><div class="sub">waiting for kickoff…</div></div>
@@ -165,6 +166,7 @@
     $("compact-btn").onclick = () => conn.send("TOGGLE_COMPACTNESS");
     $("shadows").onclick = () => conn.send("TOGGLE_SHADOWS");
     $("pitchctrl").onclick = () => conn.send("TOGGLE_PITCH_CONTROL");
+    $("formation").onclick = () => conn.send("TOGGLE_FORMATION");
 
     // Cycle the reach horizon. 2s is the useful default; 1s shows who is
     // *actually* marking right now, 3s shows how much the shape can recover.
@@ -261,6 +263,7 @@
       updateCompactness();
       $("shadows").className = state.shadowOverlay ? "primary" : "";
       $("pitchctrl").className = state.pitchControlOverlay ? "primary" : "";
+      $("formation").className = state.formationOverlay ? "primary" : "";
       $("shadowsec").textContent = `⏱ Reach horizon · ${state.shadowSeconds.toFixed(1)}s`;
       $("d-poss").textContent = `${state.possession} (${state.shadows.length} shadows)`;
     }, 200);

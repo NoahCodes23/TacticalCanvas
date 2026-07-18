@@ -101,6 +101,39 @@ export class PitchRenderer {
     else if (this._shadowLabel) this._shadowLabel.visible = false;
     if (this.state?.offsideOverlay) this._drawOffside(g);
     else if (this._offsideLabels) this._offsideLabels.forEach((t) => (t.visible = false));
+    if (this.state?.formationOverlay) this._drawFormation();
+    else if (this._formationLabels) this._formationLabels.forEach((t) => (t.visible = false));
+  }
+
+  // Auto-detected formation labels, one per team, above the top touchline.
+  // The strings come from the server; here we just place them.
+  _drawFormation() {
+    if (!this._formationLabels) {
+      this._formationLabels = [0, 1].map(() => {
+        const t = new PIXI.Text("", { fontFamily: "system-ui, sans-serif",
+                                      fontSize: 14, fill: 0xffffff, fontWeight: "bold" });
+        this.overlayLayer.addChild(t);
+        return t;
+      });
+    }
+    const [hLab, aLab] = this._formationLabels;
+    const f = this.state.formations || {};
+    const yTop = this.my(0) - 4;
+    const fs = Math.max(11, this.L.scale * 0.95);
+
+    hLab.anchor.set(0, 1);
+    hLab.style.fill = COL_HOME;
+    hLab.style.fontSize = fs;
+    hLab.text = f.home ? `HOME · ${f.home}` : "HOME · —";
+    hLab.position.set(this.mx(0), yTop);
+    hLab.visible = true;
+
+    aLab.anchor.set(1, 1);
+    aLab.style.fill = COL_AWAY;
+    aLab.style.fontSize = fs;
+    aLab.text = f.away ? `${f.away} · AWAY` : "— · AWAY";
+    aLab.position.set(this.mx(105), yTop);
+    aLab.visible = true;
   }
 
   // Defender reach shadows. The server sends one polygon per defending player
