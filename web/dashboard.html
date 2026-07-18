@@ -22,6 +22,18 @@
     button.primary { background: #1d4ed8; border-color: #2563eb; }
     button.primary:hover { background: #2563eb; }
     button.warn { background: #7c2d12; border-color: #9a3412; }
+    button:disabled { cursor: not-allowed; opacity: .5; }
+    #coach-advice { border-color: #0f766e; background: #134e4a; }
+    #coach-advice:not(:disabled):hover { background: #115e59; border-color: #14b8a6; }
+    #coach-advice.busy { cursor: wait; }
+    #coach-card { display: none; margin: 0 0 8px; padding: 9px 10px;
+                  border: 1px solid #27564f; border-radius: 7px; background: #0d2422; }
+    #coach-card.on { display: block; }
+    #coach-meta { margin-bottom: 6px; color: #5eead4;
+                  font: 9px/1.4 ui-monospace, monospace; }
+    #coach-copy { white-space: pre-wrap; color: #cbd5e1; font-size: 11px; line-height: 1.5; }
+    #coach-card.error { border-color: #7f1d1d; background: #2a1114; }
+    #coach-card.error #coach-meta { color: #fca5a5; }
     table { width: 100%; border-collapse: collapse; font: 11px/1.6 ui-monospace, monospace; }
     td { padding: 1px 0; }
     td:last-child { text-align: right; color: #9fb3c8; }
@@ -219,6 +231,11 @@
 
       <h2>Playback</h2>
       <button id="play" class="primary">⏸ Pause &amp; Edit</button>
+      <button id="coach-advice" disabled>Pause to get LLM coach advice</button>
+      <div id="coach-card" aria-live="polite">
+        <div id="coach-meta"></div>
+        <div id="coach-copy"></div>
+      </div>
       <button id="reset">↺ Reset scenario</button>
 
       <h2>Tactics</h2>
@@ -409,6 +426,48 @@
     conn.connect();
 
     const $ = (id) => document.getElementById(id);
+    let coachBusy = false;
+    let coachResultKey = "";
+
+    function clearCoachAdvice() {
+      coachResultKey = "";
+      $("coach-card").className = "";
+      $("coach-meta").textContent = "";
+      $("coach-copy").textContent = "";
+    }
+
+    $("coach-advice").onclick = async () => {
+      if (coachBusy || state?.playing) return;
+      coachBusy = true;
+      const button = $("coach-advice");
+      button.disabled = true;
+      button.classList.add("busy");
+      button.textContent = "Analyzing 5 tactical snapshots…";
+      const card = $("coach-card");
+      card.className = "on";
+      $("coach-meta").textContent = "DeepSeek is reading the tactical window…";
+      $("coach-copy").textContent = "";
+      try {
+        const response = await fetch("/api/coach-advice", { method: "POST" });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || "Coach advice request failed.");
+        coachResultKey = `${data.matchId}:${data.frameIndex}:${data.revision}`;
+        card.className = "on";
+        $("coach-meta").textContent =
+          `${data.model} · ${data.frameCount} frames · frame ${data.frameIndex}${data.cached ? " · cached" : ""}`;
+        // Keep model output inert: Markdown remains readable, but can never be
+        // interpreted as HTML from an external response.
+        $("coach-copy").textContent = data.advice;
+      } catch (error) {
+        card.className = "on error";
+        $("coach-meta").textContent = "Coach advice unavailable";
+        $("coach-copy").textContent = error.message || String(error);
+      } finally {
+        coachBusy = false;
+        button.classList.remove("busy");
+      }
+    };
+
     $("play").onclick = () => {
       // When a video is attached it's the master clock: drive it, and the
       // resulting play/pause event pipes back through SET_PLAYBACK_TIME.
@@ -418,7 +477,10 @@
         conn.send("SET_PLAYING", { playing: !state?.playing });
       }
     };
-    $("reset").onclick = () => conn.send("RESET_SCENARIO");
+    $("reset").onclick = () => {
+      clearCoachAdvice();
+      conn.send("RESET_SCENARIO");
+    };
     $("calib").onclick = () => conn.send("TOGGLE_CALIBRATION");
     $("offside").onclick = () => conn.send("TOGGLE_OFFSIDE");
     $("compact-btn").onclick = () => conn.send("TOGGLE_COMPACTNESS");
@@ -554,6 +616,16 @@
       $("d-mode").textContent = state.editMode ? "EDIT (frozen)" : state.playing ? "playing" : "paused";
       $("play").textContent = state.playing ? "⏸ Pause & Edit" : "▶ Resume";
       $("play").className = state.playing ? "primary" : "warn";
+      const coachButton = $("coach-advice");
+      coachButton.disabled = coachBusy || state.playing;
+      if (!coachBusy) {
+        coachButton.textContent = state.playing
+          ? "Pause to get LLM coach advice"
+          : "Get LLM coach advice";
+      }
+      if (coachResultKey && coachResultKey !== `${state.matchId}:${state.frameIndex}:${state.revision}`) {
+        clearCoachAdvice();
+      }
       $("offside").className = state.offsideOverlay ? "primary" : "";
       $("compact-btn").className = state.compactnessOverlay ? "primary" : "";
       updateCompactness();

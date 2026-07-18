@@ -6,17 +6,20 @@ import queue as queue_mod
 import re
 import time
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import match_data
+from .coach import CoachServiceError, request_coach_advice
 from .protocol import PROTOCOL_VERSION, Envelope, server_message
 from .state import AppState, now_ms
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIR = os.path.join(ROOT, "web")
 UPLOAD_DIR = os.path.join(ROOT, "data", "uploads")
+load_dotenv(os.path.join(ROOT, ".env"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Cap uploads at 2 GB. A full-match broadcast at H.264 is ~1.2 GB; anything
@@ -32,6 +35,8 @@ state = AppState()
 clients: set[WebSocket] = set()
 vision_queue: "multiprocessing.Queue | None" = None
 vision_proc: "multiprocessing.Process | None" = None
+coach_request_lock = asyncio.Lock()
+coach_advice_cache: dict[tuple, dict] = {}
 
 
 async def broadcast(message: dict) -> None:
@@ -152,6 +157,57 @@ async def dashboard():
 @app.get("/projector")
 async def projector():
     return FileResponse(os.path.join(WEB_DIR, "projector.html"))
+
+
+@app.post("/api/coach-advice")
+async def coach_advice():
+    """Analyze five recent paused snapshots without exposing the API key."""
+    if state.playing:
+        raise HTTPException(409, "Pause the match before requesting coach advice.")
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "OPENROUTER_API_KEY is not configured in .env.")
+
+    model = os.environ.get("OPENROUTER_MODEL", "").strip() or None
+    cache_key = (state.match_id, state.frame_index, state.revision, model)
+    cached = coach_advice_cache.get(cache_key)
+    if cached is not None:
+        return JSONResponse({**cached, "cached": True})
+
+    async with coach_request_lock:
+        cached = coach_advice_cache.get(cache_key)
+        if cached is not None:
+            return JSONResponse({**cached, "cached": True})
+        if state.playing:
+            raise HTTPException(409, "The match resumed before analysis started.")
+
+        raw_frames = state.coach_frame_inputs()
+        frames = await asyncio.to_thread(state.analyze_coach_frames, raw_frames)
+        recent_events = match_data.recent_events(state.media_time_ms / 1000.0, 3)
+        try:
+            result = await request_coach_advice(
+                frames,
+                state.match_label,
+                api_key=api_key,
+                model=model,
+                recent_events=recent_events,
+            )
+        except CoachServiceError as error:
+            raise HTTPException(502, str(error)) from error
+
+        response = {
+            **result,
+            "cached": False,
+            "frameCount": len(frames),
+            "frameIndex": state.frame_index,
+            "revision": state.revision,
+            "matchId": state.match_id,
+        }
+        coach_advice_cache[cache_key] = response
+        # Bound memory while keeping recent paid responses reusable.
+        while len(coach_advice_cache) > 32:
+            coach_advice_cache.pop(next(iter(coach_advice_cache)))
+        return JSONResponse(response)
 
 
 # --------------------------------------------------------------------------- #

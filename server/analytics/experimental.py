@@ -426,6 +426,8 @@ def _receiver_targets(
     direction: int,
     pitch_length: float,
     pitch_width: float,
+    target_limit: int | None = TOP_RECOMMENDATIONS,
+    include_holds: bool = False,
 ) -> list[dict[str, Any]]:
     by_id = {player.id: player for player in players}
     targets: list[dict[str, Any]] = []
@@ -435,7 +437,8 @@ def _receiver_targets(
             angle = 2.0 * math.pi * i / 8.0
             offsets.append((radius * math.cos(angle), radius * math.sin(angle)))
 
-    for original in passes[:TOP_RECOMMENDATIONS]:
+    candidates = passes if target_limit is None else passes[:target_limit]
+    for original in candidates:
         receiver = by_id.get(original["receiverId"])
         if receiver is None:
             continue
@@ -479,6 +482,19 @@ def _receiver_targets(
                 "improvement": round(improvement * 100.0, 2),
                 "reason": best["explanation"][0],
             })
+        elif include_holds:
+            targets.append({
+                "playerId": receiver.id,
+                "playerNumber": receiver.number,
+                "from": {"x": round(float(receiver.x), 2), "y": round(float(receiver.y), 2)},
+                "to": {"x": round(float(receiver.x), 2), "y": round(float(receiver.y), 2)},
+                "moveDistanceM": 0.0,
+                "reachableInS": 0.0,
+                "currentScore": original["score"],
+                "targetScore": original["score"],
+                "improvement": 0.0,
+                "reason": "hold position; no nearby move improves the current option",
+            })
     return targets
 
 
@@ -489,6 +505,8 @@ def analyze(
     pitch_length: float = 105.0,
     pitch_width: float = 68.0,
     include_receiver_targets: bool = False,
+    receiver_target_limit: int | None = TOP_RECOMMENDATIONS,
+    include_hold_targets: bool = False,
 ) -> dict[str, Any]:
     """Compute one explainable tactical-analysis snapshot."""
     if not players:
@@ -529,7 +547,15 @@ def analyze(
         lanes.append({"channel": name, "attackers": own_count, "defenders": opp_count, "overload": own_count - opp_count})
 
     targets = _receiver_targets(
-        players, carrier, passes, ball, direction, pitch_length, pitch_width
+        players,
+        carrier,
+        passes,
+        ball,
+        direction,
+        pitch_length,
+        pitch_width,
+        receiver_target_limit,
+        include_hold_targets,
     ) if include_receiver_targets else []
 
     return {
