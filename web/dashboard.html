@@ -112,6 +112,8 @@
     .ev .dot.home { background: #38bdf8; } .ev .dot.away { background: #fb7185; }
     .ev .lab { font-weight: 600; color: #c9d6e3; }
     .ev .det { margin-left: auto; color: #7d8fa1; font: 11px ui-monospace, monospace; }
+    .ev .xg  { margin-left: 6px; padding: 1px 5px; border-radius: 3px;
+               background: #2a1a0a; color: #fdba74; font: 600 10px ui-monospace, monospace; }
     .ev.k-goal { background: #3a2e05; border-left-color: #fbbf24; }
     .ev.k-goal .lab { color: #fde047; }
     .ev.k-shot .lab { color: #fb923c; }
@@ -360,6 +362,7 @@
         <tr><td>Corners</td><td id="ms-h-c">—</td><td id="ms-a-c">—</td></tr>
         <tr><td>Offsides</td><td id="ms-h-o">—</td><td id="ms-a-o">—</td></tr>
         <tr><td>Throws</td><td id="ms-h-t">—</td><td id="ms-a-t">—</td></tr>
+        <tr><td>Live xT (ball)</td><td id="ms-xt-home">—</td><td id="ms-xt-away">—</td></tr>
       </table>
 
       <h2>Tactics</h2>
@@ -1171,6 +1174,12 @@
         const det = document.createElement("span");
         det.className = "det"; det.textContent = e.detail || "";
         row.append(clk, dot, lab, det);
+        if (typeof e.xg === "number") {
+          const xg = document.createElement("span");
+          xg.className = "xg"; xg.textContent = `xG ${e.xg.toFixed(2)}`;
+          xg.title = `Expected goals: ${e.xg.toFixed(3)}`;
+          row.append(xg);
+        }
         return row;
       }));
     }
@@ -1195,6 +1204,12 @@
       $("ms-a-o").textContent = a.offsides;
       $("ms-h-t").textContent = h.throws;
       $("ms-a-t").textContent = a.throws;
+      // Live xT is a possession stat: show it against the team on the ball, dash
+      // the other. Format as a percentage-of-a-goal so it reads at a glance.
+      const xt = state?.xt;
+      const xtStr = xt ? xt.value.toFixed(3) : "—";
+      $("ms-xt-home").textContent = xt?.team === "home" ? xtStr : "—";
+      $("ms-xt-away").textContent = xt?.team === "away" ? xtStr : "—";
     }
 
     setInterval(() => {

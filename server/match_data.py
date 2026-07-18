@@ -16,6 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .analytics.xg import xg_value
+
 PITCH_LENGTH = 105.0
 PITCH_WIDTH = 68.0
 
@@ -116,12 +118,12 @@ def _label_kind(typ: str, sub: str) -> tuple[str, str]:
     return (typ.title() or "Event"), "other"
 
 
-def _format_event(e: dict) -> dict:
+def _format_event(e: dict, xg: float | None = None) -> dict:
     frm, to = _shirt(e.get("from", "")), _shirt(e.get("to", ""))
     label, kind = _label_kind(e.get("type", ""), e.get("subtype", ""))
     detail = f"{frm} → {to}" if frm and to else frm
     t = float(e.get("t", 0.0))
-    return {
+    out = {
         "t": round(t, 2),
         "clock": _clock(t),
         "team": e.get("team", "home"),
@@ -129,6 +131,9 @@ def _format_event(e: dict) -> dict:
         "detail": detail,
         "kind": kind,
     }
+    if xg is not None:
+        out["xg"] = round(xg, 3)
+    return out
 
 
 def _empty_stats() -> dict:
@@ -175,7 +180,7 @@ class MatchTracks:
         # for bisecting "everything up to the current replay clock".
         raw = sorted(events or [], key=lambda e: float(e.get("t", 0.0)))
         self._raw_events = raw
-        self.events = [_format_event(e) for e in raw]
+        self.events = [_format_event(e, self._xg_for_shot(e)) for e in raw]
         self._event_times = [e["t"] for e in self.events]
         self._attack_dir: np.ndarray | None = None  # built on first stats call
 
@@ -290,6 +295,25 @@ class MatchTracks:
         hi = np.minimum(d.size, idx + w // 2 + 1)
         self._attack_dir = (c[hi] - c[lo]) / (hi - lo) < 0
         return self._attack_dir
+
+    def _xg_for_shot(self, raw_event: dict) -> float | None:
+        """Compute xG for a shot event using ball position at the event's time.
+
+        Prepared events carry no coordinates, so we look up the tracking ball
+        position at the event frame -- that's where the shot was struck. Returns
+        None for anything that isn't a shot.
+        """
+        if (raw_event.get("type") or "").upper() != "SHOT":
+            return None
+        t_ev = float(raw_event.get("t", 0.0))
+        f = self._frame_at(t_ev)
+        bx = float(self.ball_positions[f, 0])
+        by = float(self.ball_positions[f, 1])
+        home_positive = bool(self._home_attacks_positive()[f])
+        team = raw_event.get("team", "home")
+        attacks_positive = home_positive if team == "home" else not home_positive
+        direction = 1 if attacks_positive else -1
+        return xg_value(bx, by, direction, PITCH_LENGTH, PITCH_WIDTH)
 
     def _in_opponent_box(self, t_ev: float, team: str) -> bool:
         """Was the ball inside the opponent's penalty area at this event?

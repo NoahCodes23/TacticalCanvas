@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from . import match_data
 from .analytics.briefing import build_briefing
 from .analytics.experimental import analyze as analyze_experimental
+from .analytics.experimental import attacking_direction
+from .analytics.xt import xt_value
 from .analytics.formation import detect_formation
 from .analytics.reach import reach_polygon
 from .analytics.suggested import suggested_positions
@@ -1002,4 +1004,13 @@ class AppState:
             "drawings": self._drawings_snapshot(),
             "drawingRevision": self.drawing_revision,
             "vision": self.vision_stats,
+            "xt": self._xt_snapshot(),
         }
+
+    def _xt_snapshot(self) -> dict:
+        """xT at the ball for the possessing team. Cheap enough to always emit --
+        the frontend can decide whether to display it. Direction is inferred from
+        team centroids so it stays correct after the half-time flip."""
+        direction = attacking_direction(self.players, self.possession)
+        value = xt_value(self.ball[0], self.ball[1], direction, PITCH_LENGTH, PITCH_WIDTH)
+        return {"value": round(value, 4), "team": self.possession}
