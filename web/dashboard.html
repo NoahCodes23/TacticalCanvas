@@ -66,6 +66,33 @@
     #compact td { padding: 1px 8px 1px 0; color: #c9d6e3; }
     #compact td.lab { color: #7d8fa1; font: 600 10px system-ui, sans-serif;
                       letter-spacing: .08em; text-transform: uppercase; }
+    /* Video replay panel, top-right of the stage. Hidden until the dashboard
+       is opened with ?video=<name>; then it plays the uploaded clip alongside
+       the pitch. Draggable header (left as a stretch) not implemented; it just
+       sits pinned. Coach can collapse it if it covers something. */
+    #vidpane { position: absolute; top: 14px; right: 14px; width: 360px;
+               background: rgba(10, 15, 20, .92); border: 1px solid #1e2a35;
+               border-radius: 10px; overflow: hidden; display: none;
+               box-shadow: 0 8px 24px rgba(0,0,0,.4); z-index: 10; }
+    #vidpane.on { display: block; }
+    #vidpane header { display: flex; align-items: center; gap: 8px;
+                      padding: 7px 10px; background: #0d141b;
+                      border-bottom: 1px solid #1e2a35; font-size: 12px;
+                      color: #c9d6e3; }
+    #vidpane header .name { flex: 1; overflow: hidden; text-overflow: ellipsis;
+                            white-space: nowrap; font-weight: 500; }
+    #vidpane header button { width: auto; padding: 2px 8px; margin: 0;
+                             font-size: 11px; background: transparent;
+                             border: 1px solid #2a3947; color: #7d8fa1; }
+    #vidpane header button:hover { color: #e6edf3; }
+    #vidpane video { display: block; width: 100%; background: #000; }
+    #vidpane.mini video { display: none; }
+    #vidpane.mini { width: 220px; }
+
+    a.back { display: inline-block; margin-bottom: 12px; padding: 4px 8px;
+             font-size: 11px; color: #7d8fa1; text-decoration: none;
+             border: 1px solid #2a3947; border-radius: 5px; }
+    a.back:hover { color: #e6edf3; border-color: #3a4c5e; }
     /* Opt-in analytics HUD. It is absent from layout and paint until the
        technicalIndicators experiment is enabled. */
     #ai-panel { position: absolute; top: 14px; right: 14px; z-index: 3;
@@ -144,6 +171,14 @@
 <body>
   <div id="app">
     <div id="stage">
+      <div id="vidpane">
+        <header>
+          <span class="name" id="vid-name">replay</span>
+          <button id="vid-mini">–</button>
+          <button id="vid-close">×</button>
+        </header>
+        <video id="vid" controls preload="metadata"></video>
+      </div>
       <div id="compact">
         <h3>Compactness · Width</h3>
         <table>
@@ -174,6 +209,7 @@
       </div>
     </div>
     <aside>
+      <a class="back" href="/">← Landing / upload another clip</a>
       <h1>TacticalCanvas</h1>
       <div class="sub">prototype · monocular gesture input</div>
 
@@ -278,6 +314,63 @@
                                        { showCalibration: true });
     const conn = new Connection("dashboard");
 
+    // Query-param handoff from the landing page: ?video=<name> attaches the
+    // uploaded replay to this session; ?match=<id> switches the tracking
+    // dataset. Both are optional -- dashboard still runs standalone.
+    const params = new URLSearchParams(location.search);
+    const videoName = params.get("video");
+    const matchParam = params.get("match");
+
+    const vidPane = document.getElementById("vidpane");
+    const vidEl = document.getElementById("vid");
+    const hasVideo = !!videoName;
+    if (hasVideo) {
+      document.getElementById("vid-name").textContent = videoName;
+      vidEl.src = `/uploads/${encodeURIComponent(videoName)}`;
+      vidPane.classList.add("on");
+    }
+    document.getElementById("vid-close").onclick = () => {
+      vidPane.classList.remove("on");
+      vidEl.pause();
+    };
+    document.getElementById("vid-mini").onclick = () => {
+      vidPane.classList.toggle("mini");
+      document.getElementById("vid-mini").textContent =
+        vidPane.classList.contains("mini") ? "▢" : "–";
+    };
+
+    // Video ↔ tracking-clock sync. The video is the master when attached:
+    // * requestVideoFrameCallback fires when the browser has actually painted
+    //   a new frame, so `mediaTime` is what the coach is *seeing* -- not
+    //   `currentTime`, which is what the video *intends* to show.
+    // * We send SET_PLAYBACK_TIME every painted frame; server pins the
+    //   tracking data to that instant so overlays stay glued to the play.
+    // * play/pause on the video mirrors to the server; conversely, if the
+    //   server enters edit mode (drag on the pitch) we pause the video.
+    let suppressVideoEvents = false;   // avoid feedback when we drive the video
+    if (hasVideo && typeof vidEl.requestVideoFrameCallback === "function") {
+      const onFrame = (_now, meta) => {
+        // `meta.mediaTime` is in seconds and reflects the frame just displayed.
+        conn.send("SET_PLAYBACK_TIME", {
+          mediaTimeMs: (meta.mediaTime ?? vidEl.currentTime) * 1000,
+          playing: !vidEl.paused && !vidEl.ended,
+        });
+        vidEl.requestVideoFrameCallback(onFrame);
+      };
+      vidEl.requestVideoFrameCallback(onFrame);
+    }
+    if (hasVideo) {
+      // Fallback + edge events. rVFC handles the streaming case; these catch
+      // the moments rVFC won't fire (paused, ended, seek-while-paused).
+      const ping = (playing) => conn.send("SET_PLAYBACK_TIME", {
+        mediaTimeMs: vidEl.currentTime * 1000, playing,
+      });
+      vidEl.addEventListener("play",  () => { if (!suppressVideoEvents) ping(true); });
+      vidEl.addEventListener("pause", () => { if (!suppressVideoEvents) ping(false); });
+      vidEl.addEventListener("seeked", () => ping(!vidEl.paused && !vidEl.ended));
+      vidEl.addEventListener("ended", () => ping(false));
+    }
+
     renderer.onDragStart = (id, boardX, boardY) =>
       conn.send("DRAG_PLAYER_START", { playerId: id, boardX, boardY });
     renderer.onDragMove = (id, boardX, boardY) =>
@@ -286,12 +379,45 @@
     renderer.enableMouse();
 
     let state = null;
-    conn.onState = (s) => { state = s; renderer.applyState(s); };
+    // Send LOAD_MATCH exactly once, after the first snapshot arrives so we
+    // know the id is actually available. Doing it before the socket has state
+    // races the server's default-match selection.
+    let matchRequested = false;
+    conn.onState = (s) => {
+      state = s;
+      renderer.applyState(s);
+      if (matchParam && !matchRequested && s?.availableMatches?.some((m) => m.id === matchParam)) {
+        matchRequested = true;
+        if (s.matchId !== matchParam) conn.send("LOAD_MATCH", { matchId: matchParam });
+      }
+      // Server → video mirror. Entering edit mode (a drag) or the sidebar's
+      // Pause both freeze the pitch; the video should freeze with it. We flag
+      // suppressVideoEvents so the resulting play/pause event doesn't bounce
+      // back as another SET_PLAYBACK_TIME.
+      if (hasVideo && vidEl.readyState >= 2) {
+        const wantPaused = s.editMode || !s.playing;
+        if (wantPaused && !vidEl.paused) {
+          suppressVideoEvents = true; vidEl.pause();
+          queueMicrotask(() => { suppressVideoEvents = false; });
+        } else if (!wantPaused && vidEl.paused && vidEl.ended === false) {
+          suppressVideoEvents = true;
+          vidEl.play().catch(() => {}).finally(() => { suppressVideoEvents = false; });
+        }
+      }
+    };
     conn.onError = (r) => console.warn("[server error]", r);
     conn.connect();
 
     const $ = (id) => document.getElementById(id);
-    $("play").onclick = () => conn.send("SET_PLAYING", { playing: !state?.playing });
+    $("play").onclick = () => {
+      // When a video is attached it's the master clock: drive it, and the
+      // resulting play/pause event pipes back through SET_PLAYBACK_TIME.
+      if (hasVideo) {
+        if (vidEl.paused) vidEl.play().catch(() => {}); else vidEl.pause();
+      } else {
+        conn.send("SET_PLAYING", { playing: !state?.playing });
+      }
+    };
     $("reset").onclick = () => conn.send("RESET_SCENARIO");
     $("calib").onclick = () => conn.send("TOGGLE_CALIBRATION");
     $("offside").onclick = () => conn.send("TOGGLE_OFFSIDE");
