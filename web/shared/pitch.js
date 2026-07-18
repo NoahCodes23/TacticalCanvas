@@ -9,7 +9,7 @@ const COL_BALL = 0xfde047;
 const COL_AI_PASS = [0xfde047, 0x4ade80, 0xc084fc];
 const COL_AI_FAINT = 0x94a3b8;
 const COL_AI_TARGET = 0x22d3ee;
-const COL_DRAWING = 0xfbbf24;
+const COL_DRAWING = 0xef4444;
 
 // Cross-fade length when possession turns over and the shadows change team.
 // Long enough to read as a deliberate handover, short enough that it has
@@ -232,25 +232,6 @@ export class PitchRenderer {
       }
       const end = screen[screen.length - 1];
       g.lineTo(end.x, end.y);
-
-      if (!stroke.complete) continue;
-      let previous = screen[screen.length - 2];
-      for (let i = screen.length - 2; i >= 0; i--) {
-        previous = screen[i];
-        if (Math.hypot(end.x - previous.x, end.y - previous.y) >= lineWidth * 2) break;
-      }
-      const angle = Math.atan2(end.y - previous.y, end.x - previous.x);
-      const head = Math.max(12, this.L.scale * 1.15);
-      const wing = Math.PI * 0.78;
-      g.beginFill(COL_DRAWING, 0.98);
-      g.drawPolygon([
-        end.x, end.y,
-        end.x + Math.cos(angle + wing) * head,
-        end.y + Math.sin(angle + wing) * head,
-        end.x + Math.cos(angle - wing) * head,
-        end.y + Math.sin(angle - wing) * head,
-      ]);
-      g.endFill();
     }
   }
 

@@ -9,12 +9,10 @@ WORLD_PINCH_CLOSE_RATIO = 0.38
 WORLD_PINCH_RELEASE_RATIO = 0.58
 PINCH_GRAB_FRAMES = 2
 PINCH_RELEASE_FRAMES = 4
-DRAW_START_FRAMES = 3
+DRAW_START_FRAMES = 2
 DRAW_RELEASE_FRAMES = 3
-DRAW_TIP_GAP_RATIO = 0.28
-DRAW_OTHER_FINGER_MARGIN = 0.72
-DRAW_MIN_JOINT_ANGLE = 145.0
-DRAW_MIN_PALM_FACING = 0.48
+DRAW_TIP_GAP_RATIO = 0.36
+DRAW_MIN_EXTENSION_RATIO = 1.35
 POSITION_ALPHA_IDLE = 0.18
 POSITION_ALPHA_MOVING = 0.68
 VELOCITY_ALPHA = 0.32
@@ -36,28 +34,15 @@ def _point3(landmarks, index: int) -> tuple[float, float, float]:
     return float(landmark.x), float(landmark.y), float(landmark.z)
 
 
-def _vector(
-    start: tuple[float, float, float], end: tuple[float, float, float]
-) -> tuple[float, float, float]:
-    return tuple(end[i] - start[i] for i in range(3))
-
-
-def _joint_angle(a, b, c) -> float:
-    ba = _vector(b, a)
-    bc = _vector(b, c)
-    denominator = math.sqrt(sum(v * v for v in ba)) * math.sqrt(
-        sum(v * v for v in bc)
-    )
-    if denominator <= 1e-9:
-        return 0.0
-    cosine = max(-1.0, min(1.0, sum(x * y for x, y in zip(ba, bc)) / denominator))
-    return math.degrees(math.acos(cosine))
-
-
 def drawing_pointer(
     landmarks, width: int, height: int, world_landmarks=None
 ) -> tuple[tuple[float, float], bool]:
-    """Return the two-finger pen tip and whether its deliberate pose is active."""
+    """Return the visible two-finger pen tip and whether it is active.
+
+    Drawing intentionally ignores palm direction and inferred world depth. If
+    the index and middle fingers visibly form one extended pen in the camera,
+    it should draw whether the palm or the back of the hand faces the lens.
+    """
 
     index_tip_px = _pixel(landmarks, 8, width, height)
     middle_tip_px = _pixel(landmarks, 12, width, height)
@@ -66,48 +51,29 @@ def drawing_pointer(
         (index_tip_px[1] + middle_tip_px[1]) / 2.0,
     )
 
-    points = world_landmarks or landmarks
-    wrist = _point3(points, 0)
-    index_mcp = _point3(points, 5)
-    pinky_mcp = _point3(points, 17)
-    palm_size = max(math.dist(index_mcp, pinky_mcp), 1e-6)
-    index_tip = _point3(points, 8)
-    middle_tip = _point3(points, 12)
-    ring_tip = _point3(points, 16)
-
-    tip_gap = math.dist(index_tip, middle_tip) / palm_size
-    middle_ring_gap = math.dist(middle_tip, ring_tip) / palm_size
-    separated_from_ring = tip_gap <= middle_ring_gap * DRAW_OTHER_FINGER_MARGIN
-
-    index_straight = (
-        _joint_angle(_point3(points, 5), _point3(points, 6), _point3(points, 8))
-        >= DRAW_MIN_JOINT_ANGLE
-        and _joint_angle(_point3(points, 6), _point3(points, 7), index_tip)
-        >= DRAW_MIN_JOINT_ANGLE
-    )
-    middle_straight = (
-        _joint_angle(_point3(points, 9), _point3(points, 10), middle_tip)
-        >= DRAW_MIN_JOINT_ANGLE
-        and _joint_angle(_point3(points, 10), _point3(points, 11), middle_tip)
-        >= DRAW_MIN_JOINT_ANGLE
+    wrist = _pixel(landmarks, 0, width, height)
+    index_mcp = _pixel(landmarks, 5, width, height)
+    index_pip = _pixel(landmarks, 6, width, height)
+    middle_mcp = _pixel(landmarks, 9, width, height)
+    middle_pip = _pixel(landmarks, 10, width, height)
+    pinky_mcp = _pixel(landmarks, 17, width, height)
+    palm_size = max(
+        math.dist(index_mcp, pinky_mcp),
+        0.75 * math.dist(wrist, middle_mcp),
+        1.0,
     )
 
-    palm_a = _vector(wrist, index_mcp)
-    palm_b = _vector(wrist, pinky_mcp)
-    normal = (
-        palm_a[1] * palm_b[2] - palm_a[2] * palm_b[1],
-        palm_a[2] * palm_b[0] - palm_a[0] * palm_b[2],
-        palm_a[0] * palm_b[1] - palm_a[1] * palm_b[0],
+    tip_gap = math.dist(index_tip_px, middle_tip_px) / palm_size
+    index_extended = math.dist(index_mcp, index_tip_px) >= (
+        DRAW_MIN_EXTENSION_RATIO * math.dist(index_mcp, index_pip)
     )
-    normal_length = math.sqrt(sum(value * value for value in normal))
-    palm_facing = abs(normal[2]) / max(normal_length, 1e-9)
-
+    middle_extended = math.dist(middle_mcp, middle_tip_px) >= (
+        DRAW_MIN_EXTENSION_RATIO * math.dist(middle_mcp, middle_pip)
+    )
     active = (
         tip_gap <= DRAW_TIP_GAP_RATIO
-        and separated_from_ring
-        and index_straight
-        and middle_straight
-        and palm_facing >= DRAW_MIN_PALM_FACING
+        and index_extended
+        and middle_extended
     )
     return pointer, active
 

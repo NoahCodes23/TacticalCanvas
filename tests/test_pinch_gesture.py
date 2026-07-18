@@ -133,32 +133,41 @@ class PinchGestureTests(unittest.TestCase):
         _, separated = drawing_pointer(drawing_landmarks(0.62), 200, 100)
         self.assertFalse(separated)
 
+    def test_palm_direction_and_ring_finger_do_not_block_drawing(self):
+        image = drawing_landmarks()
+        image[16] = SimpleNamespace(x=0.51, y=0.26, z=0.0)
+        contradictory_world = drawing_landmarks()
+        contradictory_world[8] = SimpleNamespace(x=0.1, y=0.1, z=0.5)
+        contradictory_world[12] = SimpleNamespace(x=0.9, y=0.9, z=-0.5)
+
+        _, active = drawing_pointer(
+            image, 200, 100, contradictory_world
+        )
+        self.assertTrue(active)
+
     def test_drawing_pose_is_debounced_at_both_ends(self):
         tracker = HandTracker("Right")
-        for frame in range(2):
-            self.assertEqual(
-                tracker.update(
-                    (0.5, 0.5), 0.9, 1.00 + frame / 100, draw_pose=True
-                ),
-                "hover",
-            )
         self.assertEqual(
-            tracker.update((0.5, 0.5), 0.9, 1.02, draw_pose=True),
+            tracker.update((0.5, 0.5), 0.9, 1.00, draw_pose=True),
+            "hover",
+        )
+        self.assertEqual(
+            tracker.update((0.5, 0.5), 0.9, 1.01, draw_pose=True),
             "draw_start",
         )
         self.assertEqual(
-            tracker.update((0.51, 0.5), 0.9, 1.03, draw_pose=True),
+            tracker.update((0.51, 0.5), 0.9, 1.02, draw_pose=True),
             "draw_move",
         )
         for frame in range(2):
             self.assertEqual(
                 tracker.update(
-                    (0.52, 0.5), 0.9, 1.04 + frame / 100, draw_pose=False
+                    (0.52, 0.5), 0.9, 1.03 + frame / 100, draw_pose=False
                 ),
                 "draw_move",
             )
         self.assertEqual(
-            tracker.update((0.52, 0.5), 0.9, 1.06, draw_pose=False),
+            tracker.update((0.52, 0.5), 0.9, 1.05, draw_pose=False),
             "draw_end",
         )
 
