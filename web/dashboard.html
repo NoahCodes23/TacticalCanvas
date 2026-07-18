@@ -59,6 +59,16 @@
       50%      { box-shadow: 0 0 0 5px rgba(239, 68, 68, 0); }
     }
     @media (prefers-reduced-motion: reduce) { #mic.live.listening { animation: none; } }
+    /* Typed fallback. Always available, not hidden behind a failure: when the
+       room is loud enough that the mic keeps mis-hearing, this is the input
+       that always works. */
+    #ask-row { display: flex; gap: 4px; margin: 5px 0 6px; }
+    #ask-text { flex: 1; min-width: 0; padding: 5px 7px; border-radius: 5px;
+                border: 1px solid #24303c; background: #0b1219; color: #dbe4ee;
+                font: inherit; font-size: 11px; }
+    #ask-text:focus { outline: none; border-color: #14b8a6; }
+    #ask-text::placeholder { color: #55677a; }
+    #ask-send { width: auto; padding: 5px 11px; }
     #mic-log { display: flex; flex-direction: column; gap: 3px;
                max-height: 132px; overflow-y: auto; margin-bottom: 6px; }
     #mic-log:empty { display: none; }
@@ -290,7 +300,16 @@
 
       <h2>Voice coach</h2>
       <button id="mic">🎙 Start talking</button>
+      <button id="ptt" class="experiment-toggle">
+        <span>Push-to-talk <span class="sub">hold Space</span></span>
+        <span id="ptt-state" class="switch-state">ON</span>
+      </button>
       <div id="mic-status" class="sub">off · click to open the mic</div>
+      <div id="ask-row">
+        <input id="ask-text" type="text" autocomplete="off"
+               placeholder="…or type it and hit Send" />
+        <button id="ask-send">Send</button>
+      </div>
 
       <h2>LLM coach</h2>
       <div id="team-picker" class="home">
@@ -722,6 +741,91 @@
         await waitForPause();
         return await requestCoachAdvice();
       },
+
+      // --- Board views -----------------------------------------------------
+      // These must mirror mcp_server.py tool-for-tool. The agent is given the
+      // MCP tool list, but in the browser the *handlers* live here, so a tool
+      // registered upstream with nothing here fails at call time -- and the
+      // model quietly falls back to whatever it can call instead.
+      set_overlay: ({ overlay, enabled }) => {
+        const map = {
+          offside: ["TOGGLE_OFFSIDE", "offsideOverlay"],
+          compactness: ["TOGGLE_COMPACTNESS", "compactnessOverlay"],
+          shadows: ["TOGGLE_SHADOWS", "shadowOverlay"],
+          pitch_control: ["TOGGLE_PITCH_CONTROL", "pitchControlOverlay"],
+          formation: ["TOGGLE_FORMATION", "formationOverlay"],
+          suggested: ["TOGGLE_SUGGESTED", "suggestedOverlay"],
+        };
+        const key = String(overlay || "").toLowerCase().replace(/[-\s]/g, "_");
+        const entry = map[key];
+        if (!entry) throw new Error(`unknown overlay ${overlay}. Valid: ${Object.keys(map).join(", ")}`);
+        const [command, field] = entry;
+        const want = enabled === undefined ? !state[field] : !!enabled;
+        if (!!state[field] !== want) conn.send(command);
+        return `${key.replace("_", " ")} overlay ${want ? "on" : "off"}.`;
+      },
+
+      set_experiment: ({ experiment, enabled }) => {
+        const map = {
+          pass_recommendations: "passRecommendations", passes: "passRecommendations",
+          passrecommendations: "passRecommendations",
+          technical_indicators: "technicalIndicators", indicators: "technicalIndicators",
+          technicalindicators: "technicalIndicators",
+          receiver_targets: "receiverTargets", targets: "receiverTargets",
+          receivertargets: "receiverTargets",
+        };
+        const name = map[String(experiment || "").toLowerCase().replace(/[-\s]/g, "_")];
+        if (!name) throw new Error(`unknown experiment ${experiment}`);
+        conn.send("SET_EXPERIMENT", { name, enabled: enabled === undefined ? true : !!enabled });
+        return `${name} ${enabled === false ? "off" : "on"}.`;
+      },
+
+      run_demo_preset: ({ preset }) => {
+        const presets = {
+          decision: [{ passRecommendations: true, technicalIndicators: true, receiverTargets: false }, false],
+          shape: [{ passRecommendations: false, technicalIndicators: true, receiverTargets: false }, true],
+          movement: [{ passRecommendations: true, technicalIndicators: true, receiverTargets: true }, false],
+          freeze: [{ technicalIndicators: true }, false],
+          clear: [{ passRecommendations: false, technicalIndicators: false, receiverTargets: false }, null],
+        };
+        const found = presets[String(preset || "").toLowerCase()];
+        if (!found) throw new Error(`unknown preset ${preset}. Valid: ${Object.keys(presets).join(", ")}`);
+        const [settings, playing] = found;
+        for (const [name, enabled] of Object.entries(settings)) {
+          conn.send("SET_EXPERIMENT", { name, enabled });
+        }
+        if (playing !== null) conn.send("SET_PLAYING", { playing });
+        return `Demo preset "${preset}" applied.`;
+      },
+
+      list_matches: () => JSON.stringify({
+        active: state.matchId, matches: state.availableMatches,
+      }),
+
+      load_match: ({ match_id }) => {
+        const ids = (state.availableMatches || []).map((m) => m.id);
+        if (!ids.includes(match_id)) throw new Error(`unknown match ${match_id}. Valid: ${ids.join(", ")}`);
+        conn.send("LOAD_MATCH", { matchId: match_id });
+        return `Loaded ${match_id}, rewound to kickoff.`;
+      },
+
+      set_coaching_team: ({ team }) => {
+        const key = String(team || "").toLowerCase();
+        if (key !== "home" && key !== "away") throw new Error("team must be 'home' or 'away'");
+        clearCoachAdvice();
+        conn.send("SET_COACHING_TEAM", { team: key });
+        return `Now coaching the ${key} side.`;
+      },
+
+      start_calibration: () => {
+        conn.send("START_CALIBRATION");
+        return "Calibration started.";
+      },
+
+      cancel_calibration: () => {
+        conn.send("CANCEL_CALIBRATION");
+        return "Calibration cancelled.";
+      },
     };
 
     // Debug handle: exercise any voice tool from the console without a mic, e.g.
@@ -753,17 +857,24 @@
         if (!live) micButton.classList.remove("listening", "speaking");
         micButton.textContent = live ? "⏹ Stop talking"
           : status === "connecting" ? "… connecting" : "🎙 Start talking";
-        micStatus.textContent = {
-          connecting: "opening the mic…",
-          connected: "listening · say “I want advice”",
-          disconnected: "off · click to open the mic",
-          error: micStatus.textContent,
-        }[status] ?? status;
+        if (live) {
+          paintMicStatus();  // knows about push-to-talk and text-only
+        } else {
+          micStatus.textContent = {
+            connecting: "opening the mic…",
+            disconnected: "off · click to open the mic",
+            error: micStatus.textContent,
+          }[status] ?? status;
+        }
       },
       onMode: (mode) => {
-        micButton.classList.toggle("speaking", mode === "speaking");
-        micButton.classList.toggle("listening", mode !== "speaking");
-        micStatus.textContent = mode === "speaking" ? "speaking…" : "listening…";
+        const speaking = mode === "speaking";
+        micButton.classList.toggle("speaking", speaking);
+        // With push-to-talk the idle state is a closed mic, so don't pulse
+        // "listening" at the coach when nothing is actually being heard.
+        micButton.classList.toggle("listening", !speaking && (!pttEnabled || pttHeld));
+        if (speaking) micStatus.textContent = "speaking…";
+        else paintMicStatus();
       },
       onTranscript: (role, text) => logVoice(role, `${role === "user" ? "you" : "coach"}: ${text}`),
       onError: (message) => {
@@ -771,7 +882,102 @@
         micStatus.textContent = message;
       },
     });
-    micButton.onclick = () => voice.toggle();
+    // ---------------------------------------------------------------------
+    // Push-to-talk
+    //
+    // In a room with background chatter an always-open mic transcribes other
+    // people and the agent answers them. Muting between turns removes the
+    // problem at the source rather than trying to filter it: the session stays
+    // up, with its context and tools, and only opens while Space is held.
+    // ---------------------------------------------------------------------
+    const pttButton = $("ptt");
+    let pttEnabled = true;      // safe default; a quiet room can switch it off
+    let pttHeld = false;
+
+    function renderPtt() {
+      pttButton.className = pttEnabled ? "experiment-toggle primary" : "experiment-toggle";
+      $("ptt-state").textContent = pttEnabled ? "ON" : "OFF";
+    }
+    renderPtt();
+
+    function paintMicStatus() {
+      if (!voice.active) return;
+      if (voice.transport === "text") {
+        micStatus.textContent = "typed only · mic is off · Send below";
+      } else if (pttEnabled) {
+        micStatus.textContent = pttHeld ? "mic open · speak now" : "push-to-talk · hold Space";
+      } else {
+        micStatus.textContent = "listening · say “I want advice”";
+      }
+    }
+
+    pttButton.onclick = () => {
+      pttEnabled = !pttEnabled;
+      pttHeld = false;
+      renderPtt();
+      // Apply immediately to a live session: toggling off should open the mic
+      // there and then, not on the next reconnect.
+      voice.setMicMuted(pttEnabled);
+      micButton.classList.toggle("listening", voice.active && !pttEnabled);
+      paintMicStatus();
+    };
+
+    // Space is held, not tapped. Ignore auto-repeat, ignore it while the coach
+    // is typing in the Send box, and re-mute on blur so alt-tabbing away can
+    // never leave the mic open.
+    const typing = (e) => e.target instanceof HTMLInputElement
+      || e.target instanceof HTMLTextAreaElement;
+
+    addEventListener("keydown", (e) => {
+      if (e.code !== "Space" || e.repeat || typing(e)) return;
+      if (!pttEnabled || !voice.active || voice.transport === "text") return;
+      e.preventDefault();          // Space would otherwise scroll or re-click a focused button
+      pttHeld = true;
+      voice.setMicMuted(false);
+      micButton.classList.add("listening");
+      paintMicStatus();
+    });
+
+    addEventListener("keyup", (e) => {
+      if (e.code !== "Space" || !pttHeld) return;
+      e.preventDefault();
+      pttHeld = false;
+      voice.setMicMuted(true);
+      micButton.classList.remove("listening");
+      paintMicStatus();
+    });
+
+    // A lost window keeps no keyup, so the mic would stay open behind your back.
+    addEventListener("blur", () => {
+      if (!pttHeld) return;
+      pttHeld = false;
+      voice.setMicMuted(true);
+      micButton.classList.remove("listening");
+      paintMicStatus();
+    });
+
+    micButton.onclick = () => voice.toggle({ startMuted: pttEnabled });
+
+    // Typed turns. Same agent, same tools, same transcript -- the only thing
+    // that changes is that nothing has to be heard correctly first.
+    const askText = $("ask-text");
+    const askSend = $("ask-send");
+    async function submitAsk() {
+      const text = askText.value.trim();
+      if (!text || askSend.disabled) return;
+      askSend.disabled = true;
+      askText.value = "";
+      try {
+        if (!(await voice.sendText(text))) askText.value = text;  // let them retry
+      } finally {
+        askSend.disabled = false;
+        askText.focus();
+      }
+    }
+    askSend.onclick = submitAsk;
+    askText.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); submitAsk(); }
+    };
 
     const cls = (el, good) => (el.className = good ? "ok" : "bad");
 

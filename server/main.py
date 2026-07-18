@@ -252,12 +252,21 @@ async def coach_advice():
 
 @app.get("/api/voice-token")
 async def voice_token():
-    """Mint a short-lived signed URL so the browser can open a voice session.
+    """Mint short-lived credentials so the browser can open a voice session.
 
     The ElevenLabs API key must never reach the page: the agent is private, so
-    the browser gets a signed URL minted here instead. The agent it points at is
-    configured (by voice_agent.py) to use OpenRouter as its LLM, so this endpoint
-    is the whole browser-side dependency on ElevenLabs.
+    the browser gets minted credentials from here instead. The agent it points at
+    is configured (by voice_agent.py) to use OpenRouter as its LLM, so this
+    endpoint is the whole browser-side dependency on ElevenLabs.
+
+    Two credentials, because they select different transports and the transport
+    is what determines microphone quality. A conversation token connects over
+    WebRTC, which runs the mic through ElevenLabs' echo cancellation and
+    background-noise removal before transcription -- the thing that keeps a noisy
+    room out of the transcript. A signed URL only ever connects over a plain
+    WebSocket (the SDK rejects the pairing outright), which leaves filtering to
+    whatever the browser does locally. We mint both and let the page prefer the
+    token, so a token failure degrades to a working session instead of no voice.
     """
     api_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
     agent_id = os.environ.get("ELEVENLABS_AGENT_ID", "").strip()
@@ -270,17 +279,36 @@ async def voice_token():
             "Run 'python voice_agent.py' once to create and configure an agent.",
         )
 
-    url = "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url"
+    base = "https://api.elevenlabs.io/v1/convai/conversation"
+    params = {"agent_id": agent_id}
+    headers = {"xi-api-key": api_key}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-            response = await client.get(
-                url, params={"agent_id": agent_id}, headers={"xi-api-key": api_key}
+            token_response, url_response = await asyncio.gather(
+                client.get(f"{base}/token", params=params, headers=headers),
+                client.get(f"{base}/get-signed-url", params=params, headers=headers),
+                return_exceptions=True,
             )
     except httpx.HTTPError as error:
         raise HTTPException(502, "Could not reach ElevenLabs.") from error
-    if response.is_error:
-        raise HTTPException(502, f"ElevenLabs rejected the request: {response.text[:200]}")
-    return JSONResponse({"signedUrl": response.json()["signed_url"], "agentId": agent_id})
+
+    def _field(response: object, key: str) -> str | None:
+        if isinstance(response, BaseException) or response.is_error:
+            return None
+        return response.json().get(key)
+
+    signed_url = _field(url_response, "signed_url")
+    conversation_token = _field(token_response, "token")
+    if not signed_url and not conversation_token:
+        detail = url_response if not isinstance(url_response, BaseException) else token_response
+        text = getattr(detail, "text", str(detail))[:200]
+        raise HTTPException(502, f"ElevenLabs rejected the request: {text}")
+
+    return JSONResponse({
+        "signedUrl": signed_url,
+        "conversationToken": conversation_token,
+        "agentId": agent_id,
+    })
 
 
 # --------------------------------------------------------------------------- #

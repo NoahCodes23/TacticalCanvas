@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 PROTOCOL_VERSION = 1
 CommandType = Literal[
     "SET_PLAYING",              # {playing: bool}
+    "SET_PLAYBACK_TIME",        # {mediaTimeMs, playing?}  -- video is the clock
     "ENTER_EDIT_MODE",          # {}
     "EXIT_EDIT_MODE",           # {}
     "DRAG_PLAYER_START",        # {playerId, boardX, boardY}
@@ -19,6 +20,9 @@ CommandType = Literal[
     "TOGGLE_SHADOWS",           # {}  -- defender reach shadows
     "TOGGLE_PITCH_CONTROL",     # {}  -- arrival/nearest-player control map
     "TOGGLE_FORMATION",         # {}  -- inferred team formations
+    "TOGGLE_SUGGESTED",         # {}  -- ghost circles for suggested positions
+    "SET_COACHING_TEAM",        # {team: 'home'|'away'}
+    "TOGGLE_COACHING_TEAM",     # {}
     "SET_SHADOW_SECONDS",       # {seconds}  -- reach horizon, clamped 0.5-4.0
     "SET_EXPERIMENT",           # {name, enabled?} -- opt-in analytics feature
     "LOAD_MATCH",               # {matchId}  -- switch the active test match
