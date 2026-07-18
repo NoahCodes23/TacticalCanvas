@@ -64,6 +64,9 @@
       <button id="play" class="primary">⏸ Pause &amp; Edit</button>
       <button id="reset">↺ Reset scenario</button>
 
+      <h2>Tactics</h2>
+      <button id="offside">▎ Offside line</button>
+
       <h2>Match events</h2>
       <div id="events"><div class="sub">waiting for kickoff…</div></div>
 
@@ -124,6 +127,7 @@
     $("play").onclick = () => conn.send("SET_PLAYING", { playing: !state?.playing });
     $("reset").onclick = () => conn.send("RESET_SCENARIO");
     $("calib").onclick = () => conn.send("TOGGLE_CALIBRATION");
+    $("offside").onclick = () => conn.send("TOGGLE_OFFSIDE");
     $("proj").onclick = () => window.open("/projector", "_blank", "width=1280,height=720");
 
     const cls = (el, good) => (el.className = good ? "ok" : "bad");
@@ -207,6 +211,7 @@
       $("d-mode").textContent = state.editMode ? "EDIT (frozen)" : state.playing ? "playing" : "paused";
       $("play").textContent = state.playing ? "⏸ Pause & Edit" : "▶ Resume";
       $("play").className = state.playing ? "primary" : "warn";
+      $("offside").className = state.offsideOverlay ? "primary" : "";
     }, 200);
   </script>
 </body>

@@ -93,8 +93,12 @@ export class PitchRenderer {
   _drawOverlay() {
     const g = this.overlayLayer;
     g.clear();
-    if (!this.showCalibration || !this.state?.calibrationOverlay) return;
+    if (this.showCalibration && this.state?.calibrationOverlay) this._drawCalibration(g);
+    if (this.state?.offsideOverlay) this._drawOffside(g);
+    else if (this._offsideLabels) this._offsideLabels.forEach((t) => (t.visible = false));
+  }
 
+  _drawCalibration(g) {
     const corners = [[0, 0], [1, 0], [1, 1], [0, 1]];
     const r = Math.max(18, this.L.scale * 1.6);
     corners.forEach(([cx, cy], i) => {
@@ -106,6 +110,49 @@ export class PitchRenderer {
       g.moveTo(x, y - r * 1.6); g.lineTo(x, y + r * 1.6);
       this._corner(i, x, y, r);
     });
+  }
+
+  // Offside line = x of the second-last defender on each team, on the half they
+  // defend. Which end each team defends is decided by team centroid so the line
+  // stays correct after half-time (when the tracking flips direction).
+  _drawOffside(g) {
+    const xs = { home: [], away: [] };
+    for (const p of this.state.players) (xs[p.team] || (xs[p.team] = [])).push(p.x);
+    if (!xs.home || !xs.away || xs.home.length < 2 || xs.away.length < 2) return;
+    const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+    const homeDefendsLeft = mean(xs.home) < mean(xs.away);
+    xs.home.sort((a, b) => a - b);
+    xs.away.sort((a, b) => a - b);
+    const homeLine = homeDefendsLeft ? xs.home[1] : xs.home[xs.home.length - 2];
+    const awayLine = homeDefendsLeft ? xs.away[xs.away.length - 2] : xs.away[1];
+    this._offsideLine(g, homeLine, COL_HOME, "home", 0);
+    this._offsideLine(g, awayLine, COL_AWAY, "away", 1);
+  }
+
+  _offsideLine(g, xMetres, colour, label, slot) {
+    const x = this.mx(xMetres);
+    const yTop = this.my(0), yBot = this.my(68);
+    g.lineStyle(Math.max(2, this.L.scale * 0.14), colour, 0.85);
+    const dash = Math.max(6, this.L.scale * 0.8);
+    const gap = dash * 0.55;
+    for (let y = yTop; y < yBot; y += dash + gap) {
+      g.moveTo(x, y); g.lineTo(x, Math.min(y + dash, yBot));
+    }
+    if (!this._offsideLabels) {
+      this._offsideLabels = [0, 1].map(() => {
+        const t = new PIXI.Text("", { fontFamily: "system-ui, sans-serif",
+                                      fontSize: 12, fill: 0xffffff, fontWeight: "bold" });
+        t.anchor.set(0.5, 1);
+        this.overlayLayer.addChild(t);
+        return t;
+      });
+    }
+    const t = this._offsideLabels[slot];
+    t.visible = true;
+    t.style.fill = colour;
+    t.style.fontSize = Math.max(10, this.L.scale * 0.85);
+    t.text = `OFFSIDE · ${label}`;
+    t.position.set(x, yTop - 4);
   }
 
   _corner(i, x, y, r) {

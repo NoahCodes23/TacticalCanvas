@@ -22,6 +22,7 @@ class AppState:
 
         self.edit_mode = False
         self.calibration_overlay = False
+        self.offside_overlay = False
 
         self.players: list[Player] = match_data.build_players()
         self.ball = (PITCH_LENGTH / 2, PITCH_WIDTH / 2)
@@ -109,6 +110,7 @@ class AppState:
         self.grabbed.clear()
         self.edit_mode = False
         self.calibration_overlay = False
+        self.offside_overlay = False
         self.playing = True
         self.media_time_ms = 0.0
         self.frame_index = 0
@@ -118,6 +120,10 @@ class AppState:
 
     def toggle_calibration(self) -> None:
         self.calibration_overlay = not self.calibration_overlay
+        self._bump()
+
+    def toggle_offside(self) -> None:
+        self.offside_overlay = not self.offside_overlay
         self._bump()
 
     def drag_start(self, player_id: str, bx: float, by: float, owner: str) -> None:
@@ -202,6 +208,7 @@ class AppState:
             "mediaTimeMs": round(self.media_time_ms, 1),
             "editMode": self.edit_mode,
             "calibrationOverlay": self.calibration_overlay,
+            "offsideOverlay": self.offside_overlay,
             "matchId": self.match_id,
             "matchLabel": self.match_label,
             "availableMatches": match_data.list_matches(),
