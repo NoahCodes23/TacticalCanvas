@@ -10,6 +10,27 @@ import cv2
 import numpy as np
 
 
+def field_warp_basis(points: np.ndarray) -> np.ndarray:
+    """Cubic 2D basis used for smooth lens residuals on the field plane."""
+
+    values = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    x, y = values[:, 0], values[:, 1]
+    return np.column_stack(
+        (
+            np.ones(len(values)),
+            x,
+            y,
+            x * x,
+            x * y,
+            y * y,
+            x * x * x,
+            x * x * y,
+            x * y * y,
+            y * y * y,
+        )
+    )
+
+
 @dataclass(frozen=True)
 class Point:
     x: float
@@ -134,9 +155,10 @@ class FieldCalibration:
     reprojection_rmse: float
     camera_jitter: float
     markers_used: list[int]
+    correction_coefficients: list[list[float]] = field(default_factory=list)
     camera_fps: float = 30.0
     dictionary: str = "DICT_4X4_50"
-    version: int = 1
+    version: int = 2
     created_at: str = ""
 
     def __post_init__(self) -> None:
@@ -145,6 +167,23 @@ class FieldCalibration:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def correct_field_points(self, points: np.ndarray) -> np.ndarray:
+        """Apply the learned cubic lens residual after the base homography."""
+
+        values = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+        coefficients = np.asarray(self.correction_coefficients, dtype=np.float64)
+        if coefficients.shape != (2, 10):
+            return values.copy()
+        return values + field_warp_basis(values) @ coefficients.T
+
+    def camera_points_to_field(self, points: np.ndarray) -> np.ndarray:
+        source = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+        mapped = cv2.perspectiveTransform(
+            source.reshape(-1, 1, 2),
+            np.asarray(self.camera_to_field, dtype=np.float64),
+        ).reshape(-1, 2)
+        return self.correct_field_points(mapped)
 
     def save(self, path: str | Path) -> Path:
         destination = Path(path)

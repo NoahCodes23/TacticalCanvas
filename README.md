@@ -26,11 +26,16 @@ open the projector view, then click **Calibrate field** under Setup in the
 dashboard. Six ArUco markers are rendered inside the known 105 x 68 field and
 the running vision worker automatically collects them. Keep the camera still
 until the dashboard reports success; no OpenCV window or corner clicking is
-required. `python tc.py calibrate` now points to this web flow.
+required. The solver uses all visible marker corners to learn a residual field
+warp after perspective correction, which compensates for smooth webcam and
+projector lens error on the playing surface. Recalibrate once after upgrading
+to this version. `python tc.py calibrate` now points to this web flow.
 
 Hand control uses a thumb/index pinch. The pointer is the midpoint of the two
 fingertips: close the pinch to pick up the nearest piece, move while pinched,
-and open the pinch to release it.
+and open the pinch to release it. Release requires a short sustained opening,
+brief tracking gaps do not immediately drop a held piece, and a pinch can snap
+to the nearest player from roughly one piece-width away.
 
 For the projector itself, enable Game/Low Latency mode and disable motion
 interpolation, keystone correction, noise reduction, and other image processing
@@ -55,6 +60,11 @@ http://localhost:8000/projector?quality=performance
 For comparison and tuning, `?renderScale=1.25`, `1.5`, or `2` overrides the
 canvas scale while retaining the selected quality preset. Values are clamped to
 the safe 1x-2x range.
+
+The projector field defaults to 82% of the available window so the entire
+interaction area stays away from the camera's least reliable outer edge. For
+testing, `?fieldFill=0.75` through `?fieldFill=0.96` changes that centered field
+size without changing its 105 x 68 coordinates or invalidating calibration.
 
 ## Experimental tactical analysis
 

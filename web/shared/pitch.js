@@ -16,7 +16,7 @@ const COL_AI_TARGET = 0x22d3ee;
 const SHADOW_FADE_MS = 350;
 
 export class PitchRenderer {
-  constructor(el, { showCalibration = true, quality = "sharp" } = {}) {
+  constructor(el, { showCalibration = true, quality = "sharp", fieldFill = 0.94 } = {}) {
     this.el = el;
     this.showCalibration = showCalibration;
     this.state = null;
@@ -29,6 +29,10 @@ export class PitchRenderer {
     const requestedScale = Number(params.get("renderScale"));
     this.renderScaleOverride = Number.isFinite(requestedScale) && requestedScale > 0
       ? Math.min(2, Math.max(1, requestedScale)) : null;
+    const requestedFieldFill = Number(params.get("fieldFill"));
+    this.fieldFill = Number.isFinite(requestedFieldFill) && requestedFieldFill > 0
+      ? Math.min(0.96, Math.max(0.65, requestedFieldFill))
+      : Math.min(0.96, Math.max(0.65, fieldFill));
     this.renderResolution = this._desiredResolution();
     // Pixi Text is rasterized into its own texture. Keeping those textures at
     // least 2x prevents small glyphs becoming blocky even in performance mode.
@@ -105,8 +109,8 @@ export class PitchRenderer {
     const w = this.app.renderer.width / this.app.renderer.resolution;
     const h = this.app.renderer.height / this.app.renderer.resolution;
     const aspect = PITCH_L / PITCH_W;
-    let pw = w * 0.94, ph = pw / aspect;
-    if (ph > h * 0.94) { ph = h * 0.94; pw = ph * aspect; }
+    let pw = w * this.fieldFill, ph = pw / aspect;
+    if (ph > h * this.fieldFill) { ph = h * this.fieldFill; pw = ph * aspect; }
     this.L = { w, h, pw, ph, ox: (w - pw) / 2, oy: (h - ph) / 2, scale: pw / PITCH_L };
     this.geometryVersion++;
     this.overlayDirty = true;

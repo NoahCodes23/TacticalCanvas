@@ -11,7 +11,10 @@ from .analytics.suggested import suggested_positions
 from .match_data import PITCH_LENGTH, PITCH_WIDTH, Player
 from tactical_canvas.calibration.layout import create_field_marker_layout
 
-GRAB_RADIUS_M = 3.0
+# The rendered piece radius is roughly 1.15m. A 4m centre-to-centre capture
+# radius lets a pinch land about one piece diameter outside the marker and still
+# select the nearest unclaimed player, without reaching across normal spacing.
+GRAB_RADIUS_M = 4.0
 
 # A challenger must get this much closer to the ball than the team currently
 # credited with it before possession flips, so a 50/50 doesn't strobe the
@@ -66,7 +69,7 @@ class AppState:
             "active": False,
             "progress": 0.0,
             "visibleMarkers": 0,
-            "requiredMarkers": 4,
+            "requiredMarkers": 6,
         }
         self.offside_overlay = False
         self.compactness_overlay = False
@@ -390,7 +393,7 @@ class AppState:
             "active": True,
             "progress": 0.0,
             "visibleMarkers": 0,
-            "requiredMarkers": 4,
+            "requiredMarkers": 6,
         }
         self.grabbed.clear()
         self.cursors.clear()

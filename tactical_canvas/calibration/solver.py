@@ -6,7 +6,13 @@ import cv2
 import numpy as np
 
 from .layout import FieldMarkerPlacement, REQUIRED_MARKER_IDS, MarkerPlacement
-from .models import DisplayInfo, FieldCalibration, ProjectorCalibration, Size
+from .models import (
+    DisplayInfo,
+    FieldCalibration,
+    ProjectorCalibration,
+    Size,
+    field_warp_basis,
+)
 
 
 class CalibrationAccumulator:
@@ -17,10 +23,12 @@ class CalibrationAccumulator:
         layout: list[MarkerPlacement] | list[FieldMarkerPlacement],
         minimum_samples: int = 14,
         maximum_samples: int = 60,
+        required_marker_ids: tuple[int, ...] = REQUIRED_MARKER_IDS,
     ) -> None:
         self._layout = {placement.marker_id: placement for placement in layout}
         self.minimum_samples = minimum_samples
         self.maximum_samples = maximum_samples
+        self.required_marker_ids = required_marker_ids
         self._samples: dict[int, list[np.ndarray]] = defaultdict(list)
 
     def add_frame(self, detected: dict[int, np.ndarray]) -> None:
@@ -38,16 +46,24 @@ class CalibrationAccumulator:
 
     @property
     def ready(self) -> bool:
-        return all(self.sample_count(marker_id) >= self.minimum_samples for marker_id in REQUIRED_MARKER_IDS)
+        return all(
+            self.sample_count(marker_id) >= self.minimum_samples
+            for marker_id in self.required_marker_ids
+        )
 
     @property
     def progress(self) -> float:
-        least_samples = min(self.sample_count(marker_id) for marker_id in REQUIRED_MARKER_IDS)
+        least_samples = min(
+            self.sample_count(marker_id) for marker_id in self.required_marker_ids
+        )
         return min(1.0, least_samples / self.minimum_samples)
 
     @property
     def required_visible(self) -> int:
-        return sum(self.sample_count(marker_id) > 0 for marker_id in REQUIRED_MARKER_IDS)
+        return sum(
+            self.sample_count(marker_id) > 0
+            for marker_id in self.required_marker_ids
+        )
 
     def solve(
         self,
@@ -58,7 +74,7 @@ class CalibrationAccumulator:
         camera_fps: float = 30.0,
     ) -> ProjectorCalibration:
         if not self.ready:
-            raise RuntimeError("All four corner markers need more observations")
+            raise RuntimeError("All required markers need more observations")
 
         camera_points: list[np.ndarray] = []
         projector_points: list[np.ndarray] = []
@@ -118,7 +134,18 @@ class CalibrationAccumulator:
         projected = cv2.perspectiveTransform(
             source.reshape(-1, 1, 2), camera_to_field
         ).reshape(-1, 2)
-        errors = np.linalg.norm(projected - destination, axis=1)
+        basis = field_warp_basis(projected)
+        # Perspective is handled by the homography. The remaining smooth error
+        # across the flat field is predominantly camera/projector lens curvature.
+        regularization = 1e-5
+        penalty = np.eye(basis.shape[1]) * regularization
+        penalty[0, 0] = 0.0
+        coefficients = np.linalg.solve(
+            basis.T @ basis + penalty,
+            basis.T @ (destination - projected),
+        )
+        corrected = projected + basis @ coefficients
+        errors = np.linalg.norm(corrected - destination, axis=1)
         return FieldCalibration(
             camera_size=camera_size,
             camera_index=camera_index,
@@ -128,13 +155,14 @@ class CalibrationAccumulator:
             reprojection_rmse=float(np.sqrt(np.mean(np.square(errors)))),
             camera_jitter=float(np.sqrt(np.mean(np.square(all_jitter)))),
             markers_used=markers_used,
+            correction_coefficients=coefficients.T.tolist(),
         )
 
     def _correspondences(
         self,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
         if not self.ready:
-            raise RuntimeError("All four corner markers need more observations")
+            raise RuntimeError("All required markers need more observations")
 
         camera_points: list[np.ndarray] = []
         destination_points: list[np.ndarray] = []

@@ -4,7 +4,8 @@ import math
 
 PINCH_CLOSE_RATIO = 0.38
 PINCH_RELEASE_RATIO = 0.52
-GESTURE_DEBOUNCE_FRAMES = 2
+PINCH_GRAB_FRAMES = 2
+PINCH_RELEASE_FRAMES = 4
 SMOOTH_ALPHA = 0.70
 MAX_JUMP = 0.25
 JUMP_REJECT_LIMIT = 2
@@ -78,7 +79,10 @@ class HandTracker:
 
         if wants != self.grabbing:
             self.pending += 1
-            if self.pending >= GESTURE_DEBOUNCE_FRAMES:
+            required_frames = (
+                PINCH_GRAB_FRAMES if wants else PINCH_RELEASE_FRAMES
+            )
+            if self.pending >= required_frames:
                 self.grabbing = wants
                 self.pending = 0
                 return "grab_start" if wants else "grab_end"

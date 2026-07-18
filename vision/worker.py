@@ -19,10 +19,14 @@ from mediapipe.tasks.python import vision as mp_vision
 from tactical_canvas.calibration.detector import ArucoMarkerDetector
 from tactical_canvas.calibration.layout import (
     MARKER_IDS,
-    REQUIRED_MARKER_IDS,
     create_field_marker_layout,
 )
-from tactical_canvas.calibration.models import FieldCalibration, ProjectorCalibration, Size
+from tactical_canvas.calibration.models import (
+    FieldCalibration,
+    ProjectorCalibration,
+    Size,
+    field_warp_basis,
+)
 from tactical_canvas.calibration.solver import CalibrationAccumulator
 from vision.gestures import HandTracker, pinch_pointer
 
@@ -40,6 +44,7 @@ DEFAULT_CAMERA_FPS = float(os.environ.get("TC_CAMERA_FPS", "60"))
 DETECT_WIDTH = int(os.environ.get("TC_DETECT_WIDTH", "480")) or None
 LANDMARK_INPUT_PX = 224
 HAND_LOST_FRAMES = 6
+GRABBING_HAND_LOST_FRAMES = 15
 CALIBRATION_TIMEOUT_S = 30.0
 CALIBRATION_MAX_JITTER_PX = 6.0
 CALIBRATION_MAX_FIELD_RMSE = 0.02
@@ -63,6 +68,7 @@ class Calibration:
         self.points: list[tuple[int, int]] = []
         self.collecting = False
         self.camera_size: tuple[int, int] | None = None
+        self.field_correction: np.ndarray | None = None
         self.source = "none"
 
     @property
@@ -83,6 +89,7 @@ class Calibration:
         self.H = cv2.getPerspectiveTransform(src, BOARD_CORNERS)
         self.collecting = False
         self.camera_size = None
+        self.field_correction = None
         self.source = "manual"
         print("[vision] calibrated. press 's' to save.")
 
@@ -91,6 +98,7 @@ class Calibration:
         self.H = None
         self.collecting = True
         self.camera_size = None
+        self.field_correction = None
         self.source = "none"
         print(f"[vision] click the {CORNER_NAMES[0]} pitch corner")
 
@@ -108,7 +116,11 @@ class Calibration:
                 py *= (calibrated_height - 1) / (frame_height - 1)
         pt = np.array([[[px, py]]], dtype=np.float32)
         out = cv2.perspectiveTransform(pt, self.H)
-        return float(out[0, 0, 0]), float(out[0, 0, 1])
+        bx, by = float(out[0, 0, 0]), float(out[0, 0, 1])
+        if self.field_correction is not None and self.field_correction.shape == (2, 10):
+            basis = field_warp_basis(np.asarray([[bx, by]]))[0]
+            bx, by = np.asarray([bx, by]) + self.field_correction @ basis
+        return float(bx), float(by)
 
     def save(self) -> None:
         if self.H is None:
@@ -128,6 +140,12 @@ class Calibration:
                 self.camera_size = (
                     calibration.camera_size.width,
                     calibration.camera_size.height,
+                )
+                coefficients = np.asarray(
+                    calibration.correction_coefficients, dtype=np.float64
+                )
+                self.field_correction = (
+                    coefficients if coefficients.shape == (2, 10) else None
                 )
                 corners = np.asarray(
                     [[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float64
@@ -167,6 +185,7 @@ class Calibration:
                     calibration.camera_size.width,
                     calibration.camera_size.height,
                 )
+                self.field_correction = None
                 corners = np.rint(calibration.projector_corners_in_camera()).astype(int)
                 self.points = [tuple(int(value) for value in point) for point in corners]
                 self.collecting = False
@@ -184,6 +203,7 @@ class Calibration:
             self.H = np.array(data["H"], dtype=np.float32)
             self.points = [tuple(p) for p in data.get("points", [])]
             self.camera_size = None
+            self.field_correction = None
             self.source = "manual"
             print(f"[vision] loaded calibration from {CALIB_PATH}")
             return True
@@ -432,14 +452,16 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
             if command_type == "start_calibration":
                 calibration_detector = ArucoMarkerDetector()
                 calibration_accumulator = CalibrationAccumulator(
-                    create_field_marker_layout(), minimum_samples=14
+                    create_field_marker_layout(),
+                    minimum_samples=14,
+                    required_marker_ids=MARKER_IDS,
                 )
                 calibration_started = time.monotonic()
                 calibration_active = True
                 with state_lock:
                     trackers.clear()
                 emit_calibration_status(
-                    "starting", progress=0.0, visibleMarkers=0, requiredMarkers=4
+                    "starting", progress=0.0, visibleMarkers=0, requiredMarkers=6
                 )
             elif command_type == "cancel_calibration":
                 calibration_active = False
@@ -537,7 +559,12 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                 if hand_id in seen:
                     continue
                 tracker.missing += 1
-                if tracker.missing >= HAND_LOST_FRAMES:
+                missing_limit = (
+                    GRABBING_HAND_LOST_FRAMES
+                    if tracker.grabbing
+                    else HAND_LOST_FRAMES
+                )
+                if tracker.missing >= missing_limit:
                     emit({
                         "type": "hand_lost",
                         "handId": hand_id,
@@ -619,9 +646,7 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                 ):
                     detected = calibration_detector.detect(frame)
                     calibration_accumulator.add_frame(detected)
-                    required_visible = len(
-                        set(detected).intersection(REQUIRED_MARKER_IDS)
-                    )
+                    required_visible = len(set(detected).intersection(MARKER_IDS))
                     visible_markers = len(set(detected).intersection(MARKER_IDS))
                     status_now = time.monotonic()
                     if status_now - calibration_last_status >= 0.1:
@@ -631,7 +656,7 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                             progress=round(calibration_accumulator.progress, 3),
                             visibleMarkers=visible_markers,
                             requiredVisible=required_visible,
-                            requiredMarkers=len(REQUIRED_MARKER_IDS),
+                            requiredMarkers=len(MARKER_IDS),
                         )
                     if calibration_accumulator.ready:
                         emit_calibration_status(
@@ -659,6 +684,15 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                                     dtype=np.float64,
                                 )
                                 calib.camera_size = (w, h)
+                                coefficients = np.asarray(
+                                    field_calibration.correction_coefficients,
+                                    dtype=np.float64,
+                                )
+                                calib.field_correction = (
+                                    coefficients
+                                    if coefficients.shape == (2, 10)
+                                    else None
+                                )
                                 calib.points = []
                                 calib.collecting = False
                                 calib.source = "aruco-field"
@@ -677,6 +711,9 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                                 cameraJitter=round(
                                     field_calibration.camera_jitter, 2
                                 ),
+                                lensCorrection=bool(
+                                    field_calibration.correction_coefficients
+                                ),
                             )
                         except (OSError, RuntimeError, ValueError) as error:
                             calibration_active = False
@@ -693,7 +730,7 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                         emit_calibration_status(
                             "failed",
                             progress=round(final_progress, 3),
-                            reason="Timed out before all four field-corner markers were stable",
+                            reason="Timed out before all six field markers were stable",
                         )
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 if DETECT_WIDTH and w > DETECT_WIDTH:

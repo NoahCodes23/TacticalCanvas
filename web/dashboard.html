@@ -347,10 +347,12 @@
       <div class="sub" style="line-height:1.7">
         <b>Hand:</b> pinch thumb and index finger together to grab the nearest player.
         Move while pinched, then open the pinch to drop. The cursor sits between both
-        fingertips and grabbing auto-pauses.<br><br>
+        fingertips at all times. Brief tracking gaps are tolerated, and a nearby piece
+        snaps to the pinch when the cursor is about one piece-width away. Grabbing
+        auto-pauses.<br><br>
         <b>Mouse:</b> drag players on this pitch — always works, camera or not.<br><br>
         <b>Calibrate:</b> open the projector on the field, then press <b>Calibrate field</b>.
-        Keep the camera and projector still while all four corner markers are collected.
+        Keep the camera and projector still while all six field markers are collected.
       </div>
     </aside>
   </div>
@@ -684,9 +686,9 @@
       const visible = calibration.requiredVisible ?? calibration.visibleMarkers ?? 0;
       $("calibration-detail").textContent = calibration.reason
         || (calibration.active
-          ? `${visible}/${calibration.requiredMarkers || 4} corner markers visible. Keep the camera still.`
+          ? `${visible}/${calibration.requiredMarkers || 6} field markers visible. Keep the camera still.`
           : phase === "succeeded"
-            ? `${(calibration.markersUsed || []).length} markers used; camera jitter ${calibration.cameraJitter ?? 0}px.`
+            ? `${(calibration.markersUsed || []).length} markers used; camera jitter ${calibration.cameraJitter ?? 0}px; lens correction ${calibration.lensCorrection ? "on" : "off"}.`
             : "Press Calibrate field to try again.");
       $("calibration-progress").firstElementChild.style.width =
         `${Math.round((calibration.progress || 0) * 100)}%`;
