@@ -154,6 +154,9 @@ export class PitchRenderer {
   // Offside line = x of the second-last defender on each team, on the half they
   // defend. Which end each team defends is decided by team centroid so the line
   // stays correct after half-time (when the tracking flips direction).
+  // Clamped to halfway: an attacker can't be offside in their own half, so if
+  // the second-last defender has pushed past midfield the line stays at 52.5
+  // rather than following them into the attacker's side.
   _drawOffside(g) {
     const xs = { home: [], away: [] };
     for (const p of this.state.players) (xs[p.team] || (xs[p.team] = [])).push(p.x);
@@ -162,8 +165,10 @@ export class PitchRenderer {
     const homeDefendsLeft = mean(xs.home) < mean(xs.away);
     xs.home.sort((a, b) => a - b);
     xs.away.sort((a, b) => a - b);
-    const homeLine = homeDefendsLeft ? xs.home[1] : xs.home[xs.home.length - 2];
-    const awayLine = homeDefendsLeft ? xs.away[xs.away.length - 2] : xs.away[1];
+    const rawHome = homeDefendsLeft ? xs.home[1] : xs.home[xs.home.length - 2];
+    const rawAway = homeDefendsLeft ? xs.away[xs.away.length - 2] : xs.away[1];
+    const homeLine = homeDefendsLeft ? Math.min(rawHome, 52.5) : Math.max(rawHome, 52.5);
+    const awayLine = homeDefendsLeft ? Math.max(rawAway, 52.5) : Math.min(rawAway, 52.5);
     this._offsideLine(g, homeLine, COL_HOME, "home", 0);
     this._offsideLine(g, awayLine, COL_AWAY, "away", 1);
   }
