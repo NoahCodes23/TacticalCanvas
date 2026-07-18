@@ -7,7 +7,7 @@ import re
 import time
 
 import cv2
-
+import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -246,6 +246,39 @@ async def coach_advice():
         while len(coach_advice_cache) > 32:
             coach_advice_cache.pop(next(iter(coach_advice_cache)))
         return JSONResponse(response)
+
+
+@app.get("/api/voice-token")
+async def voice_token():
+    """Mint a short-lived signed URL so the browser can open a voice session.
+
+    The ElevenLabs API key must never reach the page: the agent is private, so
+    the browser gets a signed URL minted here instead. The agent it points at is
+    configured (by voice_agent.py) to use OpenRouter as its LLM, so this endpoint
+    is the whole browser-side dependency on ElevenLabs.
+    """
+    api_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+    agent_id = os.environ.get("ELEVENLABS_AGENT_ID", "").strip()
+    if not api_key:
+        raise HTTPException(503, "ELEVENLABS_API_KEY is not configured in .env.")
+    if not agent_id:
+        raise HTTPException(
+            503,
+            "ELEVENLABS_AGENT_ID is not configured in .env. "
+            "Run 'python voice_agent.py' once to create and configure an agent.",
+        )
+
+    url = "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+            response = await client.get(
+                url, params={"agent_id": agent_id}, headers={"xi-api-key": api_key}
+            )
+    except httpx.HTTPError as error:
+        raise HTTPException(502, "Could not reach ElevenLabs.") from error
+    if response.is_error:
+        raise HTTPException(502, f"ElevenLabs rejected the request: {response.text[:200]}")
+    return JSONResponse({"signedUrl": response.json()["signed_url"], "agentId": agent_id})
 
 
 # --------------------------------------------------------------------------- #

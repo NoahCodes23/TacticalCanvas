@@ -1,6 +1,10 @@
 """TacticalCanvas process and calibration commands.
 
-Usage: python tc.py [start|stop|restart|status|calibrate]
+Usage: python tc.py [start|stop|restart|status|calibrate] [--voice]
+
+--voice also launches voice_agent.py once the board is up (or TC_VOICE=1).
+Off by default: it holds the microphone and spends OpenRouter credit, which
+you do not want on every ordinary start.
 """
 
 import os
@@ -94,7 +98,7 @@ def camera_free() -> bool | None:
     cap.release()
     return ok
 
-def cmd_start() -> int:
+def cmd_start(voice: bool = False) -> int:
     if not stop_stale():
         return 1
 
@@ -113,8 +117,19 @@ def cmd_start() -> int:
             return proc.returncode or 1
         time.sleep(0.25)
 
+    # The voice agent's MCP tools drive the board over its WebSocket, so it can
+    # only start once the port is actually bound -- hence launching it here and
+    # not alongside run.py. Its failure is never the board's failure: a missing
+    # API key or a mic already in use must not take the projector down mid-demo.
+    voice_proc = None
+    if voice:
+        print("starting voice agent ...")
+        voice_proc = subprocess.Popen([sys.executable, "voice_agent.py"], cwd=ROOT)
+
     print(f"\n  dashboard  http://localhost:{PORT}/dashboard")
     print(f"  projector  http://localhost:{PORT}/projector")
+    if voice:
+        print("  voice      talk into the mic (transcript is mixed into this log)")
     print("\n  Ctrl+C to stop\n")
 
     try:
@@ -126,6 +141,12 @@ def cmd_start() -> int:
         except subprocess.TimeoutExpired:
             kill_tree(proc.pid)
         print("stopped")
+    finally:
+        # Ctrl+C in a shared console already reaches the voice agent, but an
+        # exiting server must take it down too -- a stranded agent keeps the mic
+        # and talks to a board that is no longer there.
+        if voice_proc and voice_proc.poll() is None:
+            kill_tree(voice_proc.pid)
     return 0
 
 def cmd_stop() -> int:
@@ -137,9 +158,9 @@ def cmd_stop() -> int:
     return 0 if ok else 1
 
 
-def cmd_restart() -> int:
+def cmd_restart(voice: bool = False) -> int:
     cmd_stop()
-    return cmd_start()
+    return cmd_start(voice)
 
 
 def cmd_calibrate() -> int:
@@ -174,9 +195,14 @@ COMMANDS = {
     "calibrate": cmd_calibrate,
 }
 
+# Only start and restart take --voice; the rest ignore it.
+TAKES_VOICE = {"start", "restart"}
+
 if __name__ == "__main__":
-    action = sys.argv[1] if len(sys.argv) > 1 else "start"
+    args = [a for a in sys.argv[1:] if a != "--voice"]
+    voice = "--voice" in sys.argv[1:] or os.environ.get("TC_VOICE") == "1"
+    action = args[0] if args else "start"
     if action not in COMMANDS:
         print(__doc__)
         sys.exit(2)
-    sys.exit(COMMANDS[action]())
+    sys.exit(COMMANDS[action](voice) if action in TAKES_VOICE else COMMANDS[action]())
