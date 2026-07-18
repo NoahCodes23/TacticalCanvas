@@ -39,6 +39,9 @@ EXPERIMENT_DEFAULTS = {
 COACH_RAW_HISTORY_FRAMES = 20
 COACH_SNAPSHOT_COUNT = 5
 COACH_SNAPSHOT_SPACING_FRAMES = 10  # 400 ms at the 25 Hz tracking rate
+DRAW_POINT_SPACING = 0.0025
+MAX_DRAWINGS = 24
+MAX_DRAWING_POINTS = 320
 
 
 def now_ms() -> float:
@@ -94,6 +97,10 @@ class AppState:
 
         self.grabbed: dict[str, str] = {}
         self.cursors: dict[str, dict] = {}
+        self.drawings: list[dict] = []
+        self.active_drawings: dict[str, dict] = {}
+        self.drawing_revision = 0
+        self._next_drawing_id = 1
         self._experimental_cache_key: tuple | None = None
         self._experimental_cache: dict | None = None
         # Keep a cheap, raw tracking history at the native 25 Hz frame rate.
@@ -205,6 +212,7 @@ class AppState:
         if playing:
             self.edit_mode = False
             self.grabbed.clear()
+            self._clear_drawings()
         self._bump()
 
     def set_playback_time(self, media_time_ms: float, playing: bool | None = None) -> None:
@@ -217,6 +225,7 @@ class AppState:
         # distant moments would produce misleading coaching advice.
         if abs(next_frame_index - self.frame_index) > 2:
             self._coach_history.clear()
+            self._clear_drawings()
         self.media_time_ms = next_media_time_ms
         self.frame_index = next_frame_index
         self.external_clock_last_ms = now_ms()
@@ -234,6 +243,8 @@ class AppState:
             if self.playing and self.edit_mode:
                 self.edit_mode = False
                 self.grabbed.clear()
+            if self.playing:
+                self._clear_drawings()
             if was_playing != self.playing:
                 self._bump()
         self._bump()
@@ -241,6 +252,7 @@ class AppState:
     def reset_scenario(self) -> None:
         self.players = match_data.build_players()
         self.grabbed.clear()
+        self._clear_drawings()
         self.edit_mode = False
         self.playing = True
         self.media_time_ms = 0.0
@@ -259,6 +271,7 @@ class AppState:
         self.match_label = match_data.current_label()
         self.players = match_data.build_players()
         self.grabbed.clear()
+        self._clear_drawings()
         self.edit_mode = False
         self.calibration_overlay = False
         self.offside_overlay = False
@@ -586,6 +599,59 @@ class AppState:
         if self.grabbed.pop(owner, None) is not None:
             self._bump()
 
+    def _clear_drawings(self) -> None:
+        if not self.drawings and not self.active_drawings:
+            return
+        self.drawings.clear()
+        self.active_drawings.clear()
+        self.drawing_revision += 1
+        self._bump()
+
+    def _start_drawing(self, hand: str, bx: float, by: float) -> None:
+        if self.playing:
+            return
+        self._finish_drawing(hand)
+        stroke = {
+            "id": self._next_drawing_id,
+            "handId": hand,
+            "complete": False,
+            "points": [[bx, by]],
+        }
+        self._next_drawing_id += 1
+        self.drawings.append(stroke)
+        self.active_drawings[hand] = stroke
+        if len(self.drawings) > MAX_DRAWINGS:
+            removed = self.drawings.pop(0)
+            if self.active_drawings.get(removed["handId"]) is removed:
+                self.active_drawings.pop(removed["handId"], None)
+        self.drawing_revision += 1
+        self._bump()
+
+    def _move_drawing(self, hand: str, bx: float, by: float) -> None:
+        stroke = self.active_drawings.get(hand)
+        if stroke is None or self.playing:
+            return
+        points = stroke["points"]
+        last_x, last_y = points[-1]
+        if math.hypot(bx - last_x, by - last_y) < DRAW_POINT_SPACING:
+            return
+        if len(points) >= MAX_DRAWING_POINTS:
+            points.pop(1)
+        points.append([bx, by])
+        self.drawing_revision += 1
+        self._bump()
+
+    def _finish_drawing(self, hand: str) -> None:
+        stroke = self.active_drawings.pop(hand, None)
+        if stroke is None:
+            return
+        if len(stroke["points"]) < 2:
+            self.drawings.remove(stroke)
+        else:
+            stroke["complete"] = True
+        self.drawing_revision += 1
+        self._bump()
+
     def handle_vision_event(self, evt: dict) -> None:
         etype = evt.get("type")
 
@@ -625,6 +691,7 @@ class AppState:
         if etype == "hand_lost":
             hand = evt.get("handId", "?")
             self.cursors.pop(hand, None)
+            self._finish_drawing(hand)
             self.drag_end(hand)
             return
 
@@ -645,6 +712,7 @@ class AppState:
             "boardX": bx,
             "boardY": by,
             "grabbing": etype in ("grab_start", "grab_move"),
+            "drawing": not self.playing and etype in ("draw_start", "draw_move"),
             "confidence": evt.get("confidence", 0.0),
             "lastSeenMs": received_at_ms,
             "capturedAtMs": captured_at_ms,
@@ -652,7 +720,14 @@ class AppState:
             "captureToServerMs": capture_to_server_ms,
         }
 
-        if etype in ("grab_start", "grab_move"):
+        if etype == "draw_start":
+            self.drag_end(hand)
+            self._start_drawing(hand, bx, by)
+        elif etype == "draw_move":
+            self._move_drawing(hand, bx, by)
+        elif etype == "draw_end":
+            self._finish_drawing(hand)
+        elif etype in ("grab_start", "grab_move"):
             player_id = self.grabbed.get(hand)
             if player_id:
                 self.drag_move(player_id, bx, by, owner=hand)
@@ -694,6 +769,7 @@ class AppState:
                 "boardX": round(cursor["boardX"], 4),
                 "boardY": round(cursor["boardY"], 4),
                 "grabbing": cursor["grabbing"],
+                "drawing": cursor.get("drawing", False),
                 "confidence": round(cursor["confidence"], 2),
                 "capturedAtMs": round(cursor.get("capturedAtMs", 0.0), 2),
                 "inferenceMs": round(cursor.get("inferenceMs", 0.0), 2),
@@ -704,6 +780,19 @@ class AppState:
             for hand, cursor in self.cursors.items()
         ]
 
+    def _drawings_snapshot(self) -> list[dict]:
+        return [
+            {
+                "id": stroke["id"],
+                "complete": stroke["complete"],
+                "points": [
+                    {"boardX": round(point[0], 4), "boardY": round(point[1], 4)}
+                    for point in stroke["points"]
+                ],
+            }
+            for stroke in self.drawings
+        ]
+
     def vision_snapshot(self) -> dict:
         """Small state delta sent immediately for latency-sensitive hand input."""
         return {
@@ -712,6 +801,8 @@ class AppState:
             "editMode": self.edit_mode,
             "players": self._players_snapshot(),
             "cursors": self._cursors_snapshot(),
+            "drawings": self._drawings_snapshot(),
+            "drawingRevision": self.drawing_revision,
             "vision": self.vision_stats,
             "calibrationOverlay": self.calibration_overlay,
             "calibration": self.calibration_status,
@@ -752,5 +843,7 @@ class AppState:
             "players": self._players_snapshot(),
             "ball": {"x": round(self.ball[0], 2), "y": round(self.ball[1], 2)},
             "cursors": self._cursors_snapshot(),
+            "drawings": self._drawings_snapshot(),
+            "drawingRevision": self.drawing_revision,
             "vision": self.vision_stats,
         }

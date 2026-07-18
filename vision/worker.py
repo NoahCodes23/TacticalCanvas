@@ -28,7 +28,7 @@ from tactical_canvas.calibration.models import (
     field_warp_basis,
 )
 from tactical_canvas.calibration.solver import CalibrationAccumulator
-from vision.gestures import HandTracker, pinch_pointer
+from vision.gestures import HandTracker, drawing_pointer, pinch_pointer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -353,9 +353,12 @@ def draw_overlay(frame, calib, trackers, fps, hand_count, hand_px):
     for t in trackers.values():
         if t.board is None:
             continue
-        colour = (0, 255, 0) if t.grabbing else (200, 200, 200)
+        colour = (0, 215, 255) if t.drawing else (
+            (0, 255, 0) if t.grabbing else (200, 200, 200)
+        )
         off = "" if 0 <= t.board[0] <= 1 and 0 <= t.board[1] <= 1 else " off-pitch"
-        label = (f"{t.hand_id} pinch {t.pinch_ratio:.2f} {'GRAB' if t.grabbing else 'open'} "
+        mode = "DRAW" if t.drawing else "GRAB" if t.grabbing else "open"
+        label = (f"{t.hand_id} pinch {t.pinch_ratio:.2f} {mode} "
                  f"({t.board[0]:.2f}, {t.board[1]:.2f}){off}")
         cv2.putText(frame, label, (10, 56 + 24 * list(trackers).index(t.hand_id)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2)
@@ -538,6 +541,12 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                     pointer, pinch_ratio, world_pinch_ratio = pinch_pointer(
                         landmarks, w, h, world_landmarks
                     )
+                    draw_pointer, draw_pose = drawing_pointer(
+                        landmarks, w, h, world_landmarks
+                    )
+                    tracker = trackers.setdefault(hand_id, HandTracker(hand_id))
+                    if draw_pose or tracker.drawing:
+                        pointer = draw_pointer
                     bx, by = calib.to_board(*pointer, frame_size=(w, h))
 
                     if not (math.isfinite(bx) and math.isfinite(by)):
@@ -545,13 +554,16 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                     if abs(bx) > BOARD_LIMIT or abs(by) > BOARD_LIMIT:
                         continue
 
-                    tracker = trackers.setdefault(hand_id, HandTracker(hand_id))
                     tracker.missing = 0
                     etype = tracker.update(
                         (bx, by),
                         pinch_ratio,
-                        completed_perf,
+                        metadata["captured_perf"],
                         world_pinch_ratio=world_pinch_ratio,
+                        draw_pose=draw_pose,
+                        prediction_horizon_s=min(
+                            0.10, current_pipeline_ms / 1000.0 + 0.02
+                        ),
                     )
                     if etype and tracker.board:
                         emit({
@@ -560,6 +572,7 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                             "boardX": tracker.board[0],
                             "boardY": tracker.board[1],
                             "confidence": float(handedness[0].score),
+                            "drawing": tracker.drawing,
                             "capturedAtMs": captured_at_ms,
                             "inferenceCompletedAtMs": completed_at_ms,
                             "inferenceMs": round(current_inference_ms, 2),

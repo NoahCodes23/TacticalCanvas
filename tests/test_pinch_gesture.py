@@ -1,8 +1,9 @@
+import math
 import unittest
 from types import SimpleNamespace
 
 from server.state import AppState
-from vision.gestures import HandTracker, pinch_pointer
+from vision.gestures import HandTracker, drawing_pointer, pinch_pointer
 
 
 def landmarks(
@@ -23,6 +24,22 @@ def landmarks(
     points[12] = SimpleNamespace(x=middle_x, y=0.3, z=0.0)
     points[16] = SimpleNamespace(x=ring_x, y=0.3, z=0.0)
     points[20] = SimpleNamespace(x=pinky_x, y=0.3, z=0.0)
+    return points
+
+
+def drawing_landmarks(middle_tip_x: float = 0.50):
+    points = [SimpleNamespace(x=0.5, y=0.6, z=0.0) for _ in range(21)]
+    coordinates = {
+        0: (0.50, 0.80),
+        5: (0.42, 0.55), 6: (0.43, 0.45),
+        7: (0.44, 0.35), 8: (0.45, 0.25),
+        9: (0.50, 0.54), 10: (0.50, 0.44),
+        11: (0.50, 0.34), 12: (middle_tip_x, 0.25),
+        16: (0.62, 0.36),
+        17: (0.65, 0.58),
+    }
+    for index, (x, y) in coordinates.items():
+        points[index] = SimpleNamespace(x=x, y=y, z=0.0)
     return points
 
 
@@ -107,6 +124,87 @@ class PinchGestureTests(unittest.TestCase):
         self.assertEqual(tracker.update((0.5, 0.5), 0.8, 1.02), "grab_move")
         self.assertEqual(tracker.update((0.5, 0.5), 0.3, 1.03), "grab_move")
         self.assertTrue(tracker.grabbing)
+
+    def test_two_adjacent_extended_fingers_form_drawing_pose(self):
+        pointer, active = drawing_pointer(drawing_landmarks(), 200, 100)
+        self.assertEqual(pointer, (95.0, 25.0))
+        self.assertTrue(active)
+
+        _, separated = drawing_pointer(drawing_landmarks(0.62), 200, 100)
+        self.assertFalse(separated)
+
+    def test_drawing_pose_is_debounced_at_both_ends(self):
+        tracker = HandTracker("Right")
+        for frame in range(2):
+            self.assertEqual(
+                tracker.update(
+                    (0.5, 0.5), 0.9, 1.00 + frame / 100, draw_pose=True
+                ),
+                "hover",
+            )
+        self.assertEqual(
+            tracker.update((0.5, 0.5), 0.9, 1.02, draw_pose=True),
+            "draw_start",
+        )
+        self.assertEqual(
+            tracker.update((0.51, 0.5), 0.9, 1.03, draw_pose=True),
+            "draw_move",
+        )
+        for frame in range(2):
+            self.assertEqual(
+                tracker.update(
+                    (0.52, 0.5), 0.9, 1.04 + frame / 100, draw_pose=False
+                ),
+                "draw_move",
+            )
+        self.assertEqual(
+            tracker.update((0.52, 0.5), 0.9, 1.06, draw_pose=False),
+            "draw_end",
+        )
+
+    def test_cursor_filters_spikes_and_predicts_along_velocity(self):
+        tracker = HandTracker("Right")
+        for frame, x in enumerate((0.40, 0.42, 0.44, 0.46, 0.48)):
+            tracker.update(
+                (x, 0.5),
+                0.9,
+                1.00 + frame * 0.04,
+                prediction_horizon_s=0.08,
+            )
+        self.assertGreater(tracker.velocity[0], 0.0)
+        self.assertGreater(tracker.board[0], tracker.filtered_board[0])
+        self.assertLessEqual(
+            math.dist(tracker.board, tracker.filtered_board), 0.0251
+        )
+
+        before_spike = tracker.board
+        tracker.update(
+            (0.95, 0.05), 0.9, 1.21, prediction_horizon_s=0.08
+        )
+        self.assertLess(math.dist(tracker.board, before_spike), 0.08)
+
+    def test_field_drawings_only_exist_while_paused_and_clear_on_resume(self):
+        state = AppState()
+        event = {"handId": "Right", "boardX": 0.2, "boardY": 0.3}
+        state.handle_vision_event({"type": "draw_start", **event})
+        self.assertEqual(state.drawings, [])
+
+        state.set_playing(False)
+        state.handle_vision_event({"type": "draw_start", **event})
+        state.handle_vision_event({
+            "type": "draw_move", "handId": "Right",
+            "boardX": 0.4, "boardY": 0.5,
+        })
+        state.handle_vision_event({
+            "type": "draw_end", "handId": "Right",
+            "boardX": 0.4, "boardY": 0.5,
+        })
+        self.assertEqual(len(state.drawings), 1)
+        self.assertTrue(state.drawings[0]["complete"])
+        self.assertEqual(len(state.drawings[0]["points"]), 2)
+
+        state.set_playing(True)
+        self.assertEqual(state.drawings, [])
 
     def test_grab_snaps_to_a_player_one_piece_width_away(self):
         state = AppState.__new__(AppState)

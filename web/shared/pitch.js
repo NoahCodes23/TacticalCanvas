@@ -9,6 +9,7 @@ const COL_BALL = 0xfde047;
 const COL_AI_PASS = [0xfde047, 0x4ade80, 0xc084fc];
 const COL_AI_FAINT = 0x94a3b8;
 const COL_AI_TARGET = 0x22d3ee;
+const COL_DRAWING = 0xfbbf24;
 
 // Cross-fade length when possession turns over and the shadows change team.
 // Long enough to read as a deliberate handover, short enough that it has
@@ -56,10 +57,12 @@ export class PitchRenderer {
     this.pitchLayer = new PIXI.Graphics();
     this.pitchControlLayer = new PIXI.Container();  // Voronoi shading, under everything
     this.overlayLayer = new PIXI.Graphics();
+    this.drawingLayer = new PIXI.Graphics();
     this.playersLayer = new PIXI.Container();
     this.cursorsLayer = new PIXI.Container();
     this.calibrationLayer = new PIXI.Container();
     this.app.stage.addChild(this.pitchLayer, this.pitchControlLayer, this.overlayLayer,
+                            this.drawingLayer,
                             this.playersLayer, this.cursorsLayer, this.calibrationLayer);
     this._initPitchControl();
 
@@ -70,6 +73,7 @@ export class PitchRenderer {
     this.ballCur = { x: PITCH_L / 2, y: PITCH_W / 2 };
     this.geometryVersion = 0;
     this.overlayDirty = true;
+    this.drawingKey = "";
 
     this._layout();
     this._drawPitch();
@@ -114,6 +118,7 @@ export class PitchRenderer {
     this.L = { w, h, pw, ph, ox: (w - pw) / 2, oy: (h - ph) / 2, scale: pw / PITCH_L };
     this.geometryVersion++;
     this.overlayDirty = true;
+    this.drawingKey = "";
   }
 
   mx(m) { return this.L.ox + (m / PITCH_L) * this.L.pw; }
@@ -176,6 +181,49 @@ export class PitchRenderer {
     else if (this._formationLabels) this._formationLabels.forEach((t) => (t.visible = false));
     if (this.state?.suggestedOverlay) this._drawSuggestions(g);
     else this._hideTextPool(this._suggestedLabels);
+  }
+
+  _drawAnnotations() {
+    const g = this.drawingLayer;
+    g.clear();
+    const lineWidth = Math.max(4, this.L.scale * 0.28);
+    for (const stroke of this.state?.drawings || []) {
+      const points = stroke.points || [];
+      if (points.length < 2) continue;
+      const screen = points.map((point) => ({
+        x: this.bx(point.boardX), y: this.by(point.boardY),
+      }));
+      g.lineStyle(lineWidth, COL_DRAWING, 0.94);
+      g.moveTo(screen[0].x, screen[0].y);
+      for (let i = 1; i < screen.length - 1; i++) {
+        const midpoint = {
+          x: (screen[i].x + screen[i + 1].x) / 2,
+          y: (screen[i].y + screen[i + 1].y) / 2,
+        };
+        g.quadraticCurveTo(screen[i].x, screen[i].y, midpoint.x, midpoint.y);
+      }
+      const end = screen[screen.length - 1];
+      g.lineTo(end.x, end.y);
+
+      if (!stroke.complete) continue;
+      let previous = screen[screen.length - 2];
+      for (let i = screen.length - 2; i >= 0; i--) {
+        previous = screen[i];
+        if (Math.hypot(end.x - previous.x, end.y - previous.y) >= lineWidth * 2) break;
+      }
+      const angle = Math.atan2(end.y - previous.y, end.x - previous.x);
+      const head = Math.max(12, this.L.scale * 1.15);
+      const wing = Math.PI * 0.78;
+      g.beginFill(COL_DRAWING, 0.98);
+      g.drawPolygon([
+        end.x, end.y,
+        end.x + Math.cos(angle + wing) * head,
+        end.y + Math.sin(angle + wing) * head,
+        end.x + Math.cos(angle - wing) * head,
+        end.y + Math.sin(angle - wing) * head,
+      ]);
+      g.endFill();
+    }
   }
 
   // Ghost circles at server-suggested off-ball positions. Team-coloured stroke,
@@ -538,6 +586,11 @@ export class PitchRenderer {
     }
     this.fps = this.app.ticker.FPS;
     if (this.overlayDirty) this._drawOverlay();
+    const drawingKey = `${this.geometryVersion}:${this.state?.drawingRevision || 0}`;
+    if (drawingKey !== this.drawingKey) {
+      this.drawingKey = drawingKey;
+      this._drawAnnotations();
+    }
     this._updatePitchControl();
     if (this.state) { this._frameplayers(); this._frameCursors(); }
   }
@@ -690,15 +743,20 @@ export class PitchRenderer {
       }
       const x = this.bx(c.boardX), y = this.by(c.boardY);
       const r = Math.max(10, this.L.scale * 0.9);
-      const styleKey = `${this.geometryVersion}:${c.grabbing}`;
+      const styleKey = `${this.geometryVersion}:${c.grabbing}:${c.drawing}`;
       if (g.styleKey !== styleKey) {
         g.clear();
-        if (c.grabbing) {
+        if (c.drawing) {
+          g.beginFill(COL_DRAWING, 0.9);
+          g.drawCircle(0, 0, r * 0.38);
+          g.endFill();
+        } else if (c.grabbing) {
           g.beginFill(0xffffff, 0.85);
           g.drawCircle(0, 0, r * 0.55);
           g.endFill();
         }
-        g.lineStyle(3, 0xffffff, c.grabbing ? 1 : 0.6);
+        g.lineStyle(3, c.drawing ? COL_DRAWING : 0xffffff,
+                    c.drawing || c.grabbing ? 1 : 0.6);
         g.drawCircle(0, 0, r);
         g.moveTo(-r * 1.5, 0); g.lineTo(-r * 0.7, 0);
         g.moveTo(r * 0.7, 0); g.lineTo(r * 1.5, 0);
