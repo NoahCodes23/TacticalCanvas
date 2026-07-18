@@ -12,11 +12,24 @@ const COL_AI_FAINT = 0x94a3b8;
 const COL_AI_TARGET = 0x22d3ee;
 
 export class PitchRenderer {
-  constructor(el, { showCalibration = true } = {}) {
+  constructor(el, { showCalibration = true, quality = "sharp" } = {}) {
     this.el = el;
     this.showCalibration = showCalibration;
     this.state = null;
     this.fps = 0;
+
+    const params = new URLSearchParams(window.location.search);
+    const requestedQuality = params.get("quality");
+    this.quality = requestedQuality === "performance" || requestedQuality === "sharp"
+      ? requestedQuality : quality === "performance" ? "performance" : "sharp";
+    const requestedScale = Number(params.get("renderScale"));
+    this.renderScaleOverride = Number.isFinite(requestedScale) && requestedScale > 0
+      ? Math.min(2, Math.max(1, requestedScale)) : null;
+    this.renderResolution = this._desiredResolution();
+    // Pixi Text is rasterized into its own texture. Keeping those textures at
+    // least 2x prevents small glyphs becoming blocky even in performance mode.
+    this.textResolution = Math.max(2, this.renderResolution);
+    this.textObjects = new Set();
 
     this.onDragStart = () => {};
     this.onDragMove = () => {};
@@ -25,8 +38,8 @@ export class PitchRenderer {
     this.app = new PIXI.Application({
       resizeTo: el,
       backgroundColor: 0x000000,
-      antialias: false,
-      resolution: 1,
+      antialias: this.quality !== "performance",
+      resolution: this.renderResolution,
       autoDensity: true,
       powerPreference: "high-performance",
     });
@@ -53,6 +66,34 @@ export class PitchRenderer {
     this._drawPitch();
     this._drawBallGeometry();
     this.app.ticker.add(() => this._frame());
+  }
+
+  _desiredResolution() {
+    if (this.renderScaleOverride != null) return this.renderScaleOverride;
+    if (this.quality === "performance") return 1;
+    // Supersample even on a 1x display, but cap at 2x so a 1080p projector
+    // never asks the GPU to render beyond a 4K backing buffer.
+    return Math.min(2, Math.max(1.5, window.devicePixelRatio || 1));
+  }
+
+  _makeText(value, style) {
+    const text = new PIXI.Text(value, style);
+    text.resolution = this.textResolution;
+    this.textObjects.add(text);
+    return text;
+  }
+
+  _syncDisplayResolution() {
+    const desired = this._desiredResolution();
+    if (Math.abs(desired - this.renderResolution) < 0.01) return;
+    this.renderResolution = desired;
+    this.textResolution = Math.max(2, desired);
+    this.app.renderer.resolution = desired;
+    this.app.renderer.resize(this.el.clientWidth, this.el.clientHeight);
+    for (const text of [...this.textObjects]) {
+      if (text.destroyed) this.textObjects.delete(text);
+      else text.resolution = this.textResolution;
+    }
   }
 
   _layout() {
@@ -130,7 +171,7 @@ export class PitchRenderer {
   _textFromPool(property, index, style) {
     if (!this[property]) this[property] = [];
     while (this[property].length <= index) {
-      const text = new PIXI.Text("", style);
+      const text = this._makeText("", style);
       text.anchor.set(0.5);
       this.overlayLayer.addChild(text);
       this[property].push(text);
@@ -153,11 +194,11 @@ export class PitchRenderer {
       g.lineStyle(Math.max(2.5, this.L.scale * 0.2), COL_AI_PASS[0], 0.95);
       g.drawCircle(carrierX, carrierY, radius);
       const carrierLabel = this._textFromPool("_aiCarrierLabels", 0, {
-        fontFamily: "ui-monospace, monospace", fontSize: 10,
-        fill: COL_AI_PASS[0], fontWeight: "bold", stroke: 0x071018, strokeThickness: 4,
+        fontFamily: "ui-monospace, monospace", fontSize: 14,
+        fill: COL_AI_PASS[0], fontWeight: "bold", stroke: 0x071018, strokeThickness: 3,
       });
       carrierLabel.visible = true;
-      carrierLabel.style.fontSize = Math.max(9, this.L.scale * 0.68);
+      carrierLabel.style.fontSize = Math.max(14, this.L.scale * 1.0);
       carrierLabel.text = `BALL CARRIER #${this.state.experimentalAnalysis?.context?.ballCarrierNumber ?? "?"}`;
       carrierLabel.position.set(carrierX, carrierY + radius * 1.5);
     }
@@ -186,16 +227,16 @@ export class PitchRenderer {
 
       if (recommended) {
         const label = this._textFromPool("_aiPassLabels", pass.rank - 1, {
-          fontFamily: "ui-monospace, monospace", fontSize: 11,
-          fill: colour, fontWeight: "bold", stroke: 0x071018, strokeThickness: 4,
+          fontFamily: "ui-monospace, monospace", fontSize: 14,
+          fill: colour, fontWeight: "bold", stroke: 0x071018, strokeThickness: 3,
         });
         label.visible = true;
         label.style.fill = colour;
-        label.style.fontSize = Math.max(9, this.L.scale * 0.72);
+        label.style.fontSize = Math.max(14, this.L.scale * 1.0);
         const probability = Math.round((pass.completionProbability || 0) * 100);
         const signedScore = pass.score >= 0 ? `+${pass.score}` : String(pass.score);
         label.text = `#${pass.rank}  P ${probability}%  EV ${signedScore}`;
-        label.position.set((x1 + x2) / 2, (y1 + y2) / 2 - Math.max(7, this.L.scale * 0.7));
+        label.position.set((x1 + x2) / 2, (y1 + y2) / 2 - Math.max(12, this.L.scale * 1.0));
       }
     }
   }
@@ -227,11 +268,11 @@ export class PitchRenderer {
       g.moveTo(x2, y2 - radius * 1.35); g.lineTo(x2, y2 + radius * 1.35);
 
       const label = this._textFromPool("_aiTargetLabels", index, {
-        fontFamily: "ui-monospace, monospace", fontSize: 10,
-        fill: COL_AI_TARGET, fontWeight: "bold", stroke: 0x071018, strokeThickness: 4,
+        fontFamily: "ui-monospace, monospace", fontSize: 13,
+        fill: COL_AI_TARGET, fontWeight: "bold", stroke: 0x071018, strokeThickness: 3,
       });
       label.visible = true;
-      label.style.fontSize = Math.max(9, this.L.scale * 0.68);
+      label.style.fontSize = Math.max(13, this.L.scale * 0.95);
       label.text = `#${target.playerNumber} move ${target.moveDistanceM}m  +${target.improvement} EV`;
       label.position.set(x2, y2 - radius * 1.8);
     });
@@ -242,8 +283,8 @@ export class PitchRenderer {
   _drawFormation() {
     if (!this._formationLabels) {
       this._formationLabels = [0, 1].map(() => {
-        const t = new PIXI.Text("", { fontFamily: "system-ui, sans-serif",
-                                      fontSize: 14, fill: 0xffffff, fontWeight: "bold" });
+        const t = this._makeText("", { fontFamily: "system-ui, sans-serif",
+                                       fontSize: 14, fill: 0xffffff, fontWeight: "bold" });
         this.overlayLayer.addChild(t);
         return t;
       });
@@ -251,7 +292,7 @@ export class PitchRenderer {
     const [hLab, aLab] = this._formationLabels;
     const f = this.state.formations || {};
     const yTop = this.my(0) - 4;
-    const fs = Math.max(11, this.L.scale * 0.95);
+    const fs = Math.max(14, this.L.scale * 1.05);
 
     hLab.anchor.set(0, 1);
     hLab.style.fill = COL_HOME;
@@ -291,15 +332,15 @@ export class PitchRenderer {
 
   _shadowText(team) {
     if (!this._shadowLabel) {
-      this._shadowLabel = new PIXI.Text("", { fontFamily: "system-ui, sans-serif",
-                                              fontSize: 12, fill: 0xffffff, fontWeight: "bold" });
+      this._shadowLabel = this._makeText("", { fontFamily: "system-ui, sans-serif",
+                                                fontSize: 13, fill: 0xffffff, fontWeight: "bold" });
       this._shadowLabel.anchor.set(0, 1);
       this.overlayLayer.addChild(this._shadowLabel);
     }
     const t = this._shadowLabel;
     t.visible = true;
     t.style.fill = team === "home" ? COL_HOME : COL_AWAY;
-    t.style.fontSize = Math.max(10, this.L.scale * 0.85);
+    t.style.fontSize = Math.max(13, this.L.scale * 0.95);
     t.text = `REACH · ${(this.state.shadowSeconds ?? 2).toFixed(1)}s · ${team}`;
     t.position.set(this.mx(0), this.my(0) - 4);
   }
@@ -351,8 +392,8 @@ export class PitchRenderer {
     }
     if (!this._offsideLabels) {
       this._offsideLabels = [0, 1].map(() => {
-        const t = new PIXI.Text("", { fontFamily: "system-ui, sans-serif",
-                                      fontSize: 12, fill: 0xffffff, fontWeight: "bold" });
+        const t = this._makeText("", { fontFamily: "system-ui, sans-serif",
+                                       fontSize: 13, fill: 0xffffff, fontWeight: "bold" });
         t.anchor.set(0.5, 1);
         this.overlayLayer.addChild(t);
         return t;
@@ -361,7 +402,7 @@ export class PitchRenderer {
     const t = this._offsideLabels[slot];
     t.visible = true;
     t.style.fill = colour;
-    t.style.fontSize = Math.max(10, this.L.scale * 0.85);
+    t.style.fontSize = Math.max(13, this.L.scale * 0.95);
     t.text = `OFFSIDE · ${label}`;
     t.position.set(x, yTop - 4);
   }
@@ -369,8 +410,8 @@ export class PitchRenderer {
   _corner(i, x, y, r) {
     if (!this._cornerLabels) {
       this._cornerLabels = [0, 1, 2, 3].map(() => {
-        const t = new PIXI.Text("", { fontFamily: "monospace", fontSize: 28,
-                                      fill: COL_CALIB, fontWeight: "bold" });
+        const t = this._makeText("", { fontFamily: "monospace", fontSize: 28,
+                                       fill: COL_CALIB, fontWeight: "bold" });
         t.anchor.set(0.5);
         this.overlayLayer.addChild(t);
         return t;
@@ -384,6 +425,7 @@ export class PitchRenderer {
   }
 
   _frame() {
+    this._syncDisplayResolution();
     const w = this.app.renderer.width / this.app.renderer.resolution;
     if (!this.L || Math.abs(w - this.L.w) > 1 ||
         Math.abs(this.app.renderer.height / this.app.renderer.resolution - this.L.h) > 1) {
@@ -489,7 +531,12 @@ export class PitchRenderer {
       sp.label.position.copyFrom(sp.gfx.position);
     }
     for (const [id, sp] of this.sprites) {
-      if (!seen.has(id)) { sp.gfx.destroy(); sp.label.destroy(); this.sprites.delete(id); }
+      if (!seen.has(id)) {
+        sp.gfx.destroy();
+        this.textObjects.delete(sp.label);
+        sp.label.destroy();
+        this.sprites.delete(id);
+      }
     }
 
     const b = this.state.ball;
@@ -508,7 +555,7 @@ export class PitchRenderer {
     g.beginFill(p.team === "home" ? COL_HOME : COL_AWAY, 1);
     g.drawCircle(0, 0, p.grabbed ? r * 1.2 : r);
     g.endFill();
-    sp.label.style.fontSize = Math.max(9, r * 0.95);
+    sp.label.style.fontSize = Math.max(12, r * 0.95);
   }
 
   _drawBallGeometry() {
@@ -520,7 +567,7 @@ export class PitchRenderer {
 
   _makePlayer(p) {
     const gfx = new PIXI.Graphics();
-    const label = new PIXI.Text(String(p.number), {
+    const label = this._makeText(String(p.number), {
       fontFamily: "system-ui, sans-serif", fontSize: 14, fill: 0x061018, fontWeight: "bold",
     });
     label.anchor.set(0.5);
