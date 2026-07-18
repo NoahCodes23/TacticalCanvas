@@ -94,8 +94,47 @@ export class PitchRenderer {
     const g = this.overlayLayer;
     g.clear();
     if (this.showCalibration && this.state?.calibrationOverlay) this._drawCalibration(g);
+    // Shadows first: the offside line and the players read on top of them.
+    if (this.state?.shadowOverlay) this._drawShadows(g);
+    else if (this._shadowLabel) this._shadowLabel.visible = false;
     if (this.state?.offsideOverlay) this._drawOffside(g);
     else if (this._offsideLabels) this._offsideLabels.forEach((t) => (t.visible = false));
+  }
+
+  // Defender reach shadows. The server sends one polygon per defending player
+  // (where they can get to within shadowSeconds, given their current velocity);
+  // we just fill them. The fills are deliberately translucent so overlaps
+  // compound into darker double-covered areas and the gaps between them stay
+  // bare grass -- those gaps are the unmarked zones.
+  _drawShadows(g) {
+    const shadows = this.state.shadows || [];
+    if (!shadows.length) return;
+    for (const s of shadows) {
+      if (!s.points || s.points.length < 3) continue;
+      const colour = s.team === "home" ? COL_HOME : COL_AWAY;
+      const flat = [];
+      for (const [x, y] of s.points) flat.push(this.mx(x), this.my(y));
+      g.lineStyle(Math.max(1, this.L.scale * 0.05), colour, 0.45);
+      g.beginFill(colour, 0.15);
+      g.drawPolygon(flat);
+      g.endFill();
+    }
+    this._shadowText(shadows[0].team);
+  }
+
+  _shadowText(team) {
+    if (!this._shadowLabel) {
+      this._shadowLabel = new PIXI.Text("", { fontFamily: "system-ui, sans-serif",
+                                              fontSize: 12, fill: 0xffffff, fontWeight: "bold" });
+      this._shadowLabel.anchor.set(0, 1);
+      this.overlayLayer.addChild(this._shadowLabel);
+    }
+    const t = this._shadowLabel;
+    t.visible = true;
+    t.style.fill = team === "home" ? COL_HOME : COL_AWAY;
+    t.style.fontSize = Math.max(10, this.L.scale * 0.85);
+    t.text = `REACH · ${(this.state.shadowSeconds ?? 2).toFixed(1)}s · ${team}`;
+    t.position.set(this.mx(0), this.my(0) - 4);
   }
 
   _drawCalibration(g) {

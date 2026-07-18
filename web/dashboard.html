@@ -96,6 +96,8 @@
       <h2>Tactics</h2>
       <button id="offside">▎ Offside line</button>
       <button id="compact-btn">▤ Compactness &amp; width</button>
+      <button id="shadows">◈ Defender shadows</button>
+      <button id="shadowsec">⏱ Reach horizon · 2.0s</button>
 
       <h2>Match events</h2>
       <div id="events"><div class="sub">waiting for kickoff…</div></div>
@@ -117,6 +119,7 @@
         <tr><td>hands seen</td><td id="d-hands">—</td></tr>
         <tr><td>hand size</td><td id="d-handpx">—</td></tr>
         <tr><td>calibration</td><td id="d-calib">—</td></tr>
+        <tr><td>possession</td><td id="d-poss">—</td></tr>
         <tr><td>cursors</td><td id="d-curs">—</td></tr>
         <tr><td>mode</td><td id="d-mode">—</td></tr>
       </table>
@@ -159,6 +162,15 @@
     $("calib").onclick = () => conn.send("TOGGLE_CALIBRATION");
     $("offside").onclick = () => conn.send("TOGGLE_OFFSIDE");
     $("compact-btn").onclick = () => conn.send("TOGGLE_COMPACTNESS");
+    $("shadows").onclick = () => conn.send("TOGGLE_SHADOWS");
+
+    // Cycle the reach horizon. 2s is the useful default; 1s shows who is
+    // *actually* marking right now, 3s shows how much the shape can recover.
+    const HORIZONS = [1, 1.5, 2, 3];
+    $("shadowsec").onclick = () => {
+      const i = HORIZONS.findIndex((h) => Math.abs(h - (state?.shadowSeconds ?? 2)) < 1e-6);
+      conn.send("SET_SHADOW_SECONDS", { seconds: HORIZONS[(i + 1) % HORIZONS.length] });
+    };
     $("proj").onclick = () => window.open("/projector", "_blank", "width=1280,height=720");
 
     const cls = (el, good) => (el.className = good ? "ok" : "bad");
@@ -245,6 +257,9 @@
       $("offside").className = state.offsideOverlay ? "primary" : "";
       $("compact-btn").className = state.compactnessOverlay ? "primary" : "";
       updateCompactness();
+      $("shadows").className = state.shadowOverlay ? "primary" : "";
+      $("shadowsec").textContent = `⏱ Reach horizon · ${state.shadowSeconds.toFixed(1)}s`;
+      $("d-poss").textContent = `${state.possession} (${state.shadows.length} shadows)`;
     }, 200);
 
     // Compactness / width readout. Excludes the GK (deepest outfielder on each
