@@ -23,15 +23,32 @@
     button.primary:hover { background: #2563eb; }
     button.warn { background: #7c2d12; border-color: #9a3412; }
     button:disabled { cursor: not-allowed; opacity: .5; }
-    #coach-advice { border-color: #0f766e; background: #134e4a; }
-    #coach-advice:not(:disabled):hover { background: #115e59; border-color: #14b8a6; }
-    #coach-advice.busy { cursor: wait; }
     #coach-card { display: none; margin: 0 0 8px; padding: 9px 10px;
                   border: 1px solid #27564f; border-radius: 7px; background: #0d2422; }
     #coach-card.on { display: block; }
     #coach-meta { margin-bottom: 6px; color: #5eead4;
                   font: 9px/1.4 ui-monospace, monospace; }
     #coach-copy { white-space: pre-wrap; color: #cbd5e1; font-size: 11px; line-height: 1.5; }
+    /* Microphone toggle. The listening state pulses so a glance at the sidebar
+       tells you whether the mic is open -- important when the coach is at the
+       wall and the laptop is across the room. */
+    #mic.live { background: #7f1d1d; border-color: #b91c1c; }
+    #mic.live.listening { animation: micpulse 1.6s ease-in-out infinite; }
+    #mic.live.speaking { background: #134e4a; border-color: #14b8a6; }
+    @keyframes micpulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, .45); }
+      50%      { box-shadow: 0 0 0 5px rgba(239, 68, 68, 0); }
+    }
+    @media (prefers-reduced-motion: reduce) { #mic.live.listening { animation: none; } }
+    #mic-log { display: flex; flex-direction: column; gap: 3px;
+               max-height: 132px; overflow-y: auto; margin-bottom: 6px; }
+    #mic-log:empty { display: none; }
+    #mic-log .line { padding: 3px 7px; border-radius: 5px; background: #111a22;
+                     font-size: 11px; line-height: 1.45; color: #c9d6e3; }
+    #mic-log .line.user { color: #9fb3c8; }
+    #mic-log .line.agent { border-left: 2px solid #14b8a6; }
+    #mic-log .line.tool { color: #fbbf24; font: 10px ui-monospace, monospace; }
+
     #coach-card.error { border-color: #7f1d1d; background: #2a1114; }
     #coach-card.error #coach-meta { color: #fca5a5; }
     table { width: 100%; border-collapse: collapse; font: 11px/1.6 ui-monospace, monospace; }
@@ -231,12 +248,17 @@
 
       <h2>Playback</h2>
       <button id="play" class="primary">⏸ Pause &amp; Edit</button>
-      <button id="coach-advice" disabled>Pause to get LLM coach advice</button>
+      <button id="reset">↺ Reset scenario</button>
+
+      <h2>Voice coach</h2>
+      <button id="mic">🎙 Start talking</button>
+      <div id="mic-status" class="sub">off · click to open the mic</div>
       <div id="coach-card" aria-live="polite">
         <div id="coach-meta"></div>
         <div id="coach-copy"></div>
       </div>
-      <button id="reset">↺ Reset scenario</button>
+      <div id="mic-log" aria-live="polite"></div>
+      <div class="sub">Say “I want advice” for a read of the paused moment.</div>
 
       <h2>Tactics</h2>
       <button id="offside">▎ Offside line</button>
@@ -323,9 +345,11 @@
   </div>
 
   <script src="/static/vendor/pixi.min.js"></script>
+  <script src="/static/vendor/elevenlabs.iife.js"></script>
   <script type="module">
     import { Connection } from "/static/shared/ws.js";
     import { PitchRenderer } from "/static/shared/pitch.js";
+    import { VoiceSession } from "/static/shared/voice.js";
 
     const renderer = new PitchRenderer(document.getElementById("stage"),
                                        { showCalibration: true });
@@ -436,16 +460,19 @@
       $("coach-copy").textContent = "";
     }
 
-    $("coach-advice").onclick = async () => {
-      if (coachBusy || state?.playing) return;
+    /**
+     * Run the coach-advice request and render it into the card.
+     *
+     * Voice-only: the sole caller is the voice agent's get_coach_advice tool.
+     * It still renders to the card so the room can read the advice while it is
+     * being spoken, and returns the text so the agent can say it.
+     */
+    async function requestCoachAdvice() {
+      if (coachBusy) throw new Error("Coach advice is already being generated.");
       coachBusy = true;
-      const button = $("coach-advice");
-      button.disabled = true;
-      button.classList.add("busy");
-      button.textContent = "Analyzing 5 tactical snapshots…";
       const card = $("coach-card");
       card.className = "on";
-      $("coach-meta").textContent = "DeepSeek is reading the tactical window…";
+      $("coach-meta").textContent = "Reading the tactical window…";
       $("coach-copy").textContent = "";
       try {
         const response = await fetch("/api/coach-advice", { method: "POST" });
@@ -458,15 +485,16 @@
         // Keep model output inert: Markdown remains readable, but can never be
         // interpreted as HTML from an external response.
         $("coach-copy").textContent = data.advice;
+        return data.advice;
       } catch (error) {
         card.className = "on error";
         $("coach-meta").textContent = "Coach advice unavailable";
         $("coach-copy").textContent = error.message || String(error);
+        throw error;
       } finally {
         coachBusy = false;
-        button.classList.remove("busy");
       }
-    };
+    }
 
     $("play").onclick = () => {
       // When a video is attached it's the master clock: drive it, and the
@@ -518,6 +546,151 @@
     });
 
     $("proj").onclick = () => window.open("/projector", "_blank", "width=1280,height=720");
+
+    // ---------------------------------------------------------------------
+    // Voice coach
+    //
+    // The mic button opens an ElevenLabs session whose LLM is OpenRouter
+    // (tencent/hy3) -- see voice_agent.py, which configures the agent. The tool
+    // names below must match the client tools registered there. Handlers run in
+    // the page rather than over MCP, so they reuse the command socket this
+    // dashboard already holds: a spoken "pause" and a clicked Pause are the
+    // exact same command, and the projector reacts identically.
+    // ---------------------------------------------------------------------
+    const micLog = $("mic-log");
+    function logVoice(kind, text) {
+      const line = document.createElement("div");
+      line.className = `line ${kind}`;
+      line.textContent = text;
+      micLog.prepend(line);           // newest first, matching the event feed
+      while (micLog.children.length > 24) micLog.lastChild.remove();
+    }
+
+    const waitForPause = async () => {
+      // Advice needs a frozen frame: /api/coach-advice rejects a playing match.
+      // Pausing is a command, not a request, so wait for the state to come back
+      // rather than firing and hoping.
+      if (!state?.playing) return;
+      conn.send("SET_PLAYING", { playing: false });
+      for (let i = 0; i < 40 && state?.playing; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    };
+
+    const trimPlayer = (p) => ({
+      id: p.id, team: p.team, number: p.number,
+      x: +p.x.toFixed(1), y: +p.y.toFixed(1), edited: !!p.edited,
+    });
+
+    const voiceTools = {
+      tool_1: () => "tool 1 ran (from the dashboard)",
+
+      get_board_state: () => JSON.stringify({
+        playing: state.playing,
+        editMode: state.editMode,
+        frameIndex: state.frameIndex,
+        ball: state.ball,
+        possession: state.possession,
+        players: state.players.map(trimPlayer),
+      }),
+
+      list_players: () => JSON.stringify(state.players.map(trimPlayer)),
+
+      set_playing: ({ playing }) => {
+        conn.send("SET_PLAYING", { playing: !!playing });
+        return `Replay ${playing ? "resumed" : "paused"}.`;
+      },
+
+      enter_edit_mode: () => {
+        conn.send("ENTER_EDIT_MODE");
+        return "Edit mode on, frame frozen.";
+      },
+
+      exit_edit_mode: () => {
+        conn.send("EXIT_EDIT_MODE");
+        return "Edit mode off.";
+      },
+
+      reset_scenario: () => {
+        clearCoachAdvice();
+        conn.send("RESET_SCENARIO");
+        return "Scenario reset to kickoff; edits cleared.";
+      },
+
+      toggle_calibration: () => {
+        conn.send("TOGGLE_CALIBRATION");
+        return "Calibration markers toggled.";
+      },
+
+      move_player: ({ player_id, x_m, y_m }) => {
+        const player = state.players.find((p) => p.id === player_id);
+        if (!player) {
+          throw new Error(
+            `unknown player ${player_id}. Valid ids: ${state.players.map((p) => p.id).join(", ")}`
+          );
+        }
+        const { length, width } = state.pitch;
+        const x = Math.min(Math.max(x_m, 0), length);
+        const y = Math.min(Math.max(y_m, 0), width);
+        conn.send("DRAG_PLAYER_START", { playerId: player_id, boardX: x / length, boardY: y / width });
+        conn.send("DRAG_PLAYER_END", { playerId: player_id });
+        return `Moved ${player_id} to ${x.toFixed(1)}, ${y.toFixed(1)} metres.`;
+      },
+
+      get_coach_advice: async () => {
+        await waitForPause();
+        return await requestCoachAdvice();
+      },
+    };
+
+    // Debug handle: exercise any voice tool from the console without a mic, e.g.
+    //   await tcVoiceTools.get_coach_advice()
+    //   await tcVoiceTools.move_player({player_id: "H9", x_m: 30, y_m: 20})
+    // Worth keeping -- it isolates "the tool is broken" from "the mic or the
+    // model is broken", which are very different problems to debug on stage.
+    window.tcVoiceTools = voiceTools;
+
+    // Announce each call in the sidebar. During a demo this is the proof the
+    // spoken request actually drove the board rather than just sounding good.
+    const instrumentedTools = Object.fromEntries(
+      Object.entries(voiceTools).map(([name, handler]) => [
+        name,
+        async (params) => {
+          logVoice("tool", `→ ${name}(${JSON.stringify(params || {})})`);
+          return await handler(params || {});
+        },
+      ])
+    );
+
+    const micButton = $("mic");
+    const micStatus = $("mic-status");
+    const voice = new VoiceSession({
+      clientTools: instrumentedTools,
+      onStatus: (status) => {
+        const live = status === "connected";
+        micButton.classList.toggle("live", live);
+        if (!live) micButton.classList.remove("listening", "speaking");
+        micButton.textContent = live ? "⏹ Stop talking"
+          : status === "connecting" ? "… connecting" : "🎙 Start talking";
+        micStatus.textContent = {
+          connecting: "opening the mic…",
+          connected: "listening · say “I want advice”",
+          disconnected: "off · click to open the mic",
+          error: micStatus.textContent,
+        }[status] ?? status;
+      },
+      onMode: (mode) => {
+        micButton.classList.toggle("speaking", mode === "speaking");
+        micButton.classList.toggle("listening", mode !== "speaking");
+        micStatus.textContent = mode === "speaking" ? "speaking…" : "listening…";
+      },
+      onTranscript: (role, text) => logVoice(role, `${role === "user" ? "you" : "coach"}: ${text}`),
+      onError: (message) => {
+        logVoice("tool", `error: ${message}`);
+        micStatus.textContent = message;
+      },
+    });
+    micButton.onclick = () => voice.toggle();
 
     const cls = (el, good) => (el.className = good ? "ok" : "bad");
 
@@ -616,13 +789,9 @@
       $("d-mode").textContent = state.editMode ? "EDIT (frozen)" : state.playing ? "playing" : "paused";
       $("play").textContent = state.playing ? "⏸ Pause & Edit" : "▶ Resume";
       $("play").className = state.playing ? "primary" : "warn";
-      const coachButton = $("coach-advice");
-      coachButton.disabled = coachBusy || state.playing;
-      if (!coachBusy) {
-        coachButton.textContent = state.playing
-          ? "Pause to get LLM coach advice"
-          : "Get LLM coach advice";
-      }
+      // Advice belongs to the frame it was generated for. Once the board moves
+      // on -- a resume, a drag, a different match -- it is stale, so drop it
+      // rather than leave the room reading advice about a moment that is gone.
       if (coachResultKey && coachResultKey !== `${state.matchId}:${state.frameIndex}:${state.revision}`) {
         clearCoachAdvice();
       }
