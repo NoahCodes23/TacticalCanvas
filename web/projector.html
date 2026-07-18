@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>TacticalCanvas — Projector</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    #stage { position: fixed; inset: 0; }
+    #offline {
+      position: fixed; top: 0; left: 0; right: 0;
+      background: #b91c1c; color: #fff; font: 600 16px system-ui, sans-serif;
+      padding: 8px 14px; display: none; letter-spacing: .02em;
+    }
+    #hint {
+      position: fixed; bottom: 10px; right: 14px; color: #ffffff55;
+      font: 500 13px system-ui, sans-serif; transition: opacity .6s; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="offline">DISCONNECTED — reconnecting…</div>
+  <div id="stage"></div>
+  <div id="hint">press F for fullscreen · drag this window to the projector first</div>
+
+  <script src="/static/vendor/pixi.min.js"></script>
+  <script type="module">
+    import { Connection } from "/static/shared/ws.js";
+    import { PitchRenderer } from "/static/shared/pitch.js";
+
+    const renderer = new PitchRenderer(document.getElementById("stage"),
+                                       { showCalibration: true });
+    const conn = new Connection("projector");
+    const offline = document.getElementById("offline");
+
+    conn.onState = (s) => { renderer.applyState(s); offline.style.display = "none"; };
+    conn.connect();
+    setInterval(() => {
+      offline.style.display = conn.connected ? "none" : "block";
+    }, 500);
+
+    addEventListener("keydown", (e) => {
+      if (e.key === "f" || e.key === "F") {
+        if (document.fullscreenElement) document.exitFullscreen();
+        else document.documentElement.requestFullscreen();
+      }
+    });
+
+    const hint = document.getElementById("hint");
+    setTimeout(() => (hint.style.opacity = "0"), 6000);
+  </script>
+</body>
+</html>
