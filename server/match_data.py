@@ -47,6 +47,8 @@ class Player:
     home_x: float   # formation anchor used only by the synthetic fallback
     home_y: float
     edited: bool = False  # True once a coach has dragged this player
+    vx: float = 0.0       # metres/second, from the tracking data
+    vy: float = 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -194,13 +196,31 @@ class MatchTracks:
             out.append(Player(id=pid, team=team, number=num, x=x, y=y, home_x=x, home_y=y))
         return out
 
+    def _velocity(self, f: int, i: int) -> tuple[float, float]:
+        """Central difference over +/-2 frames (160ms at 25Hz). Wide enough not
+        to amplify tracking jitter into a wildly swinging vector, narrow enough
+        to still show a player planting and turning."""
+        a = max(0, f - 2)
+        b = min(self.n_frames - 1, f + 2)
+        dt = (b - a) / self.fps
+        if dt <= 0:
+            return 0.0, 0.0
+        return (
+            float(self.positions[b, i, 0] - self.positions[a, i, 0]) / dt,
+            float(self.positions[b, i, 1] - self.positions[a, i, 1]) / dt,
+        )
+
     def apply(self, players: list[Player], t_sec: float) -> None:
         f = self._frame_at(t_sec)
         for i, p in enumerate(players):
-            if i >= self.n_players or p.edited:
+            if i >= self.n_players:
+                continue
+            if p.edited:
+                p.vx = p.vy = 0.0  # coach-placed: no momentum to carry
                 continue
             p.x = float(self.positions[f, i, 0])
             p.y = float(self.positions[f, i, 1])
+            p.vx, p.vy = self._velocity(f, i)
 
     def ball_at(self, t_sec: float) -> tuple[float, float]:
         f = self._frame_at(t_sec)
@@ -311,10 +331,13 @@ def advance(players: list[Player], t_sec: float) -> None:
         return
     for i, p in enumerate(players):
         if p.edited:
+            p.vx = p.vy = 0.0
             continue
         phase = i * 0.7
         p.x = p.home_x + 2.5 * math.sin(t_sec * 0.45 + phase)
         p.y = p.home_y + 1.8 * math.sin(t_sec * 0.31 + phase * 1.3)
+        p.vx = 2.5 * 0.45 * math.cos(t_sec * 0.45 + phase)
+        p.vy = 1.8 * 0.31 * math.cos(t_sec * 0.31 + phase * 1.3)
 
 
 def ball_position(t_sec: float) -> tuple[float, float]:

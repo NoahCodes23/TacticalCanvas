@@ -29,11 +29,13 @@ export class PitchRenderer {
     el.appendChild(this.app.view);
 
     this.pitchLayer = new PIXI.Graphics();
+    this.pitchControlLayer = new PIXI.Container();  // Voronoi shading, under everything
     this.overlayLayer = new PIXI.Graphics();
     this.playersLayer = new PIXI.Container();
     this.cursorsLayer = new PIXI.Container();
-    this.app.stage.addChild(this.pitchLayer, this.overlayLayer,
+    this.app.stage.addChild(this.pitchLayer, this.pitchControlLayer, this.overlayLayer,
                             this.playersLayer, this.cursorsLayer);
+    this._initPitchControl();
 
     this.sprites = new Map();  
     this.cursorSprites = new Map();
@@ -94,8 +96,47 @@ export class PitchRenderer {
     const g = this.overlayLayer;
     g.clear();
     if (this.showCalibration && this.state?.calibrationOverlay) this._drawCalibration(g);
+    // Shadows first: the offside line and the players read on top of them.
+    if (this.state?.shadowOverlay) this._drawShadows(g);
+    else if (this._shadowLabel) this._shadowLabel.visible = false;
     if (this.state?.offsideOverlay) this._drawOffside(g);
     else if (this._offsideLabels) this._offsideLabels.forEach((t) => (t.visible = false));
+  }
+
+  // Defender reach shadows. The server sends one polygon per defending player
+  // (where they can get to within shadowSeconds, given their current velocity);
+  // we just fill them. The fills are deliberately translucent so overlaps
+  // compound into darker double-covered areas and the gaps between them stay
+  // bare grass -- those gaps are the unmarked zones.
+  _drawShadows(g) {
+    const shadows = this.state.shadows || [];
+    if (!shadows.length) return;
+    for (const s of shadows) {
+      if (!s.points || s.points.length < 3) continue;
+      const colour = s.team === "home" ? COL_HOME : COL_AWAY;
+      const flat = [];
+      for (const [x, y] of s.points) flat.push(this.mx(x), this.my(y));
+      g.lineStyle(Math.max(1, this.L.scale * 0.05), colour, 0.45);
+      g.beginFill(colour, 0.15);
+      g.drawPolygon(flat);
+      g.endFill();
+    }
+    this._shadowText(shadows[0].team);
+  }
+
+  _shadowText(team) {
+    if (!this._shadowLabel) {
+      this._shadowLabel = new PIXI.Text("", { fontFamily: "system-ui, sans-serif",
+                                              fontSize: 12, fill: 0xffffff, fontWeight: "bold" });
+      this._shadowLabel.anchor.set(0, 1);
+      this.overlayLayer.addChild(this._shadowLabel);
+    }
+    const t = this._shadowLabel;
+    t.visible = true;
+    t.style.fill = team === "home" ? COL_HOME : COL_AWAY;
+    t.style.fontSize = Math.max(10, this.L.scale * 0.85);
+    t.text = `REACH · ${(this.state.shadowSeconds ?? 2).toFixed(1)}s · ${team}`;
+    t.position.set(this.mx(0), this.my(0) - 4);
   }
 
   _drawCalibration(g) {
@@ -115,6 +156,9 @@ export class PitchRenderer {
   // Offside line = x of the second-last defender on each team, on the half they
   // defend. Which end each team defends is decided by team centroid so the line
   // stays correct after half-time (when the tracking flips direction).
+  // Clamped to halfway: an attacker can't be offside in their own half, so if
+  // the second-last defender has pushed past midfield the line stays at 52.5
+  // rather than following them into the attacker's side.
   _drawOffside(g) {
     const xs = { home: [], away: [] };
     for (const p of this.state.players) (xs[p.team] || (xs[p.team] = [])).push(p.x);
@@ -123,8 +167,10 @@ export class PitchRenderer {
     const homeDefendsLeft = mean(xs.home) < mean(xs.away);
     xs.home.sort((a, b) => a - b);
     xs.away.sort((a, b) => a - b);
-    const homeLine = homeDefendsLeft ? xs.home[1] : xs.home[xs.home.length - 2];
-    const awayLine = homeDefendsLeft ? xs.away[xs.away.length - 2] : xs.away[1];
+    const rawHome = homeDefendsLeft ? xs.home[1] : xs.home[xs.home.length - 2];
+    const rawAway = homeDefendsLeft ? xs.away[xs.away.length - 2] : xs.away[1];
+    const homeLine = homeDefendsLeft ? Math.min(rawHome, 52.5) : Math.max(rawHome, 52.5);
+    const awayLine = homeDefendsLeft ? Math.max(rawAway, 52.5) : Math.min(rawAway, 52.5);
     this._offsideLine(g, homeLine, COL_HOME, "home", 0);
     this._offsideLine(g, awayLine, COL_AWAY, "away", 1);
   }
@@ -181,10 +227,76 @@ export class PitchRenderer {
     }
     this.fps = this.app.ticker.FPS;
     this._drawOverlay();
+    this._updatePitchControl();
     if (this.state) { this._frameplayers(); this._frameCursors(); }
     if (this._cornerLabels && !(this.showCalibration && this.state?.calibrationOverlay)) {
       this._cornerLabels.forEach((t) => (t.visible = false));
     }
+  }
+
+  // Voronoi pitch control: each cell of a low-res grid takes on the team colour
+  // of the nearest player. Rendered as a small canvas texture stretched over the
+  // pitch (LINEAR-filtered so the region edges look like soft shading rather
+  // than pixel steps). Recomputed only when the server bumps state.revision,
+  // which happens on every drag move -- so the shading is live under the coach's
+  // finger without the renderer having to run the algorithm at 60 Hz.
+  _initPitchControl() {
+    const PC_W = 50, PC_H = 32;
+    this._pcW = PC_W; this._pcH = PC_H;
+    this._pcCanvas = document.createElement("canvas");
+    this._pcCanvas.width = PC_W;
+    this._pcCanvas.height = PC_H;
+    this._pcCtx = this._pcCanvas.getContext("2d");
+    this._pcImage = this._pcCtx.createImageData(PC_W, PC_H);
+    const tex = PIXI.Texture.from(this._pcCanvas);
+    tex.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+    this._pcSprite = new PIXI.Sprite(tex);
+    this._pcSprite.alpha = 0.42;
+    this._pcSprite.visible = false;
+    this.pitchControlLayer.addChild(this._pcSprite);
+    this._pcLastRev = -1;
+  }
+
+  _updatePitchControl() {
+    const on = this.state?.pitchControlOverlay && this.state.players?.length;
+    if (!on) {
+      this._pcSprite.visible = false;
+      this._pcLastRev = -1;   // force redraw on re-enable
+      return;
+    }
+    this._pcSprite.visible = true;
+    this._pcSprite.position.set(this.mx(0), this.my(0));
+    this._pcSprite.width = this.L.pw;
+    this._pcSprite.height = this.L.ph;
+
+    if (this._pcLastRev === this.state.revision) return;
+    this._pcLastRev = this.state.revision;
+
+    const w = this._pcW, h = this._pcH;
+    const data = this._pcImage.data;
+    const players = this.state.players;
+    const sx = PITCH_L / w, sy = PITCH_W / h;
+    // Split-channel constants for the two team colours (matches COL_HOME/AWAY).
+    const HR = 0x38, HG = 0xbd, HB = 0xf8;
+    const AR = 0xfb, AG = 0x71, AB = 0x85;
+    for (let j = 0; j < h; j++) {
+      const yM = (j + 0.5) * sy;
+      for (let i = 0; i < w; i++) {
+        const xM = (i + 0.5) * sx;
+        let bestD2 = Infinity, home = true;
+        for (const p of players) {
+          const dx = p.x - xM, dy = p.y - yM;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < bestD2) { bestD2 = d2; home = p.team === "home"; }
+        }
+        const idx = (j * w + i) * 4;
+        if (home) { data[idx] = HR; data[idx + 1] = HG; data[idx + 2] = HB; }
+        else      { data[idx] = AR; data[idx + 1] = AG; data[idx + 2] = AB; }
+        data[idx + 3] = 255;
+      }
+    }
+    this._pcCtx.putImageData(this._pcImage, 0, 0);
+    this._pcSprite.texture.update();
   }
 
   _frameplayers() {

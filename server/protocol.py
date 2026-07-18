@@ -12,6 +12,10 @@ CommandType = Literal[
     "DRAG_PLAYER_END",          # {playerId}
     "RESET_SCENARIO",           # {}
     "TOGGLE_CALIBRATION",       # {}
+    "TOGGLE_OFFSIDE",           # {}
+    "TOGGLE_COMPACTNESS",       # {}  -- line-to-line + width readout
+    "TOGGLE_SHADOWS",           # {}  -- defender reach shadows
+    "SET_SHADOW_SECONDS",       # {seconds}  -- reach horizon, clamped 0.5-4.0
     "LOAD_MATCH",               # {matchId}  -- switch the active test match
     "PING",                     # {t}  -- client clock, echoed back for RTT
 ]

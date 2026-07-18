@@ -189,6 +189,18 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         state.toggle_offside()
     elif t == "TOGGLE_COMPACTNESS":
         state.toggle_compactness()
+    elif t == "TOGGLE_SHADOWS":
+        state.toggle_shadows()
+    elif t == "TOGGLE_PITCH_CONTROL":
+        state.toggle_pitch_control()
+    elif t == "SET_SHADOW_SECONDS":
+        try:
+            state.set_shadow_seconds(float(p.get("seconds", 2.0)))
+        except (TypeError, ValueError):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"bad seconds {p.get('seconds')!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
     elif t == "DRAG_PLAYER_START":
         state.drag_start(p["playerId"], p["boardX"], p["boardY"], owner)
     elif t == "DRAG_PLAYER_MOVE":
