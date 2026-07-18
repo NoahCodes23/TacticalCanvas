@@ -10,6 +10,8 @@ const COL_AI_PASS = [0xfde047, 0x4ade80, 0xc084fc];
 const COL_AI_FAINT = 0x94a3b8;
 const COL_AI_TARGET = 0x22d3ee;
 const COL_DRAWING = 0xef4444;
+const COL_ERASER = 0xffffff;
+const ERASER_RADIUS_M = 2.8;
 
 // Cross-fade length when possession turns over and the shadows change team.
 // Long enough to read as a deliberate handover, short enough that it has
@@ -752,10 +754,23 @@ export class PitchRenderer {
       }
       const x = this.bx(c.boardX), y = this.by(c.boardY);
       const r = Math.max(10, this.L.scale * 0.9);
-      const styleKey = `${this.geometryVersion}:${c.grabbing}:${c.drawing}`;
+      const styleKey = `${this.geometryVersion}:${c.grabbing}:${c.drawing}:${c.erasing}`;
       if (g.styleKey !== styleKey) {
         g.clear();
-        if (c.drawing) {
+        if (c.erasing) {
+          const eraserRadius = Math.max(14, this.L.scale * ERASER_RADIUS_M);
+          g.beginFill(COL_GRASS, 0.72);
+          g.lineStyle(3, COL_ERASER, 0.95);
+          g.drawCircle(0, 0, eraserRadius);
+          g.endFill();
+          g.moveTo(-eraserRadius * 0.35, -eraserRadius * 0.35);
+          g.lineTo(eraserRadius * 0.35, eraserRadius * 0.35);
+          g.moveTo(eraserRadius * 0.35, -eraserRadius * 0.35);
+          g.lineTo(-eraserRadius * 0.35, eraserRadius * 0.35);
+          g.styleKey = styleKey;
+          g.position.set(x, y);
+          continue;
+        } else if (c.drawing) {
           g.beginFill(COL_DRAWING, 0.9);
           g.drawCircle(0, 0, r * 0.38);
           g.endFill();

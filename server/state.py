@@ -43,6 +43,7 @@ COACH_SNAPSHOT_SPACING_FRAMES = 10  # 400 ms at the 25 Hz tracking rate
 DRAW_POINT_SPACING = 0.0025
 MAX_DRAWINGS = 24
 MAX_DRAWING_POINTS = 320
+ERASER_RADIUS_M = 2.8
 
 
 def now_ms() -> float:
@@ -687,6 +688,80 @@ class AppState:
         self.drawing_revision += 1
         self._bump()
 
+    @staticmethod
+    def _eraser_distance_to_segment(
+        bx: float,
+        by: float,
+        start: list[float],
+        end: list[float],
+    ) -> float:
+        px, py = bx * PITCH_LENGTH, by * PITCH_WIDTH
+        ax, ay = start[0] * PITCH_LENGTH, start[1] * PITCH_WIDTH
+        ex, ey = end[0] * PITCH_LENGTH, end[1] * PITCH_WIDTH
+        dx, dy = ex - ax, ey - ay
+        length_sq = dx * dx + dy * dy
+        if length_sq <= 1e-9:
+            return math.hypot(px - ax, py - ay)
+        projection = ((px - ax) * dx + (py - ay) * dy) / length_sq
+        amount = max(0.0, min(1.0, projection))
+        nearest_x = ax + amount * dx
+        nearest_y = ay + amount * dy
+        return math.hypot(px - nearest_x, py - nearest_y)
+
+    def _erase_drawings(self, bx: float, by: float) -> None:
+        if self.playing or not self.drawings:
+            return
+        self._next_drawing_id = max(
+            self._next_drawing_id,
+            max(stroke["id"] for stroke in self.drawings) + 1,
+        )
+        rebuilt: list[dict] = []
+        changed = False
+        for stroke in self.drawings:
+            points = stroke["points"]
+            if not stroke.get("complete") or len(points) < 2:
+                rebuilt.append(stroke)
+                continue
+
+            runs: list[list[list[float]]] = []
+            current = [points[0]]
+            stroke_changed = False
+            for start, end in zip(points, points[1:]):
+                if (
+                    self._eraser_distance_to_segment(bx, by, start, end)
+                    <= ERASER_RADIUS_M
+                ):
+                    if len(current) >= 2:
+                        runs.append(current)
+                    current = []
+                    stroke_changed = True
+                    continue
+                if not current:
+                    current = [start]
+                current.append(end)
+            if len(current) >= 2:
+                runs.append(current)
+
+            if not stroke_changed:
+                rebuilt.append(stroke)
+                continue
+            changed = True
+            for index, run in enumerate(runs):
+                stroke_id = stroke["id"] if index == 0 else self._next_drawing_id
+                if index > 0:
+                    self._next_drawing_id += 1
+                rebuilt.append({
+                    "id": stroke_id,
+                    "handId": stroke.get("handId", "?"),
+                    "complete": True,
+                    "points": run,
+                })
+
+        if changed:
+            self.drawings = rebuilt[-MAX_DRAWINGS:]
+            self.drawing_revision += 1
+            self._bump()
+
     def handle_vision_event(self, evt: dict) -> None:
         etype = evt.get("type")
 
@@ -748,6 +823,7 @@ class AppState:
             "boardY": by,
             "grabbing": etype in ("grab_start", "grab_move"),
             "drawing": not self.playing and etype in ("draw_start", "draw_move"),
+            "erasing": not self.playing and etype in ("erase_start", "erase_move"),
             "confidence": evt.get("confidence", 0.0),
             "lastSeenMs": received_at_ms,
             "capturedAtMs": captured_at_ms,
@@ -762,6 +838,17 @@ class AppState:
             self._move_drawing(hand, bx, by)
         elif etype == "draw_end":
             self._finish_drawing(hand)
+        elif etype == "erase_start":
+            self.drag_end(hand)
+            self._finish_drawing(hand)
+            self._erase_drawings(bx, by)
+        elif etype == "erase_move":
+            self._erase_drawings(bx, by)
+        elif etype == "clear_drawings":
+            if not self.playing:
+                self.drag_end(hand)
+                self._finish_drawing(hand)
+                self._clear_drawings()
         elif etype in ("grab_start", "grab_move"):
             player_id = self.grabbed.get(hand)
             if player_id:
@@ -805,6 +892,7 @@ class AppState:
                 "boardY": round(cursor["boardY"], 4),
                 "grabbing": cursor["grabbing"],
                 "drawing": cursor.get("drawing", False),
+                "erasing": cursor.get("erasing", False),
                 "confidence": round(cursor["confidence"], 2),
                 "capturedAtMs": round(cursor.get("capturedAtMs", 0.0), 2),
                 "inferenceMs": round(cursor.get("inferenceMs", 0.0), 2),

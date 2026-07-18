@@ -3,7 +3,13 @@ import unittest
 from types import SimpleNamespace
 
 from server.state import AppState
-from vision.gestures import HandTracker, drawing_pointer, pinch_pointer
+from vision.gestures import (
+    CLEAR_HOLD_FRAMES,
+    HandTracker,
+    drawing_pointer,
+    paint_gestures,
+    pinch_pointer,
+)
 
 
 def landmarks(
@@ -27,17 +33,36 @@ def landmarks(
     return points
 
 
-def drawing_landmarks(middle_tip_x: float = 0.50):
+def drawing_landmarks(
+    middle_tip_x: float = 0.50,
+    *,
+    ring_extended: bool = False,
+    five_extended: bool = False,
+):
     points = [SimpleNamespace(x=0.5, y=0.6, z=0.0) for _ in range(21)]
     coordinates = {
         0: (0.50, 0.80),
+        2: (0.44, 0.64), 3: (0.43, 0.61), 4: (0.44, 0.60),
         5: (0.42, 0.55), 6: (0.43, 0.45),
         7: (0.44, 0.35), 8: (0.45, 0.25),
         9: (0.50, 0.54), 10: (0.50, 0.44),
         11: (0.50, 0.34), 12: (middle_tip_x, 0.25),
-        16: (0.62, 0.36),
-        17: (0.65, 0.58),
+        13: (0.57, 0.56), 14: (0.58, 0.50),
+        15: (0.59, 0.54), 16: (0.60, 0.58),
+        17: (0.65, 0.58), 18: (0.66, 0.52),
+        19: (0.67, 0.56), 20: (0.67, 0.60),
     }
+    if ring_extended or five_extended:
+        coordinates.update({
+            13: (0.56, 0.55), 14: (0.56, 0.45),
+            15: (0.56, 0.35), 16: (0.55, 0.25),
+        })
+    if five_extended:
+        coordinates.update({
+            2: (0.40, 0.62), 3: (0.32, 0.56), 4: (0.22, 0.50),
+            17: (0.65, 0.58), 18: (0.66, 0.48),
+            19: (0.65, 0.37), 20: (0.63, 0.26),
+        })
     for index, (x, y) in coordinates.items():
         points[index] = SimpleNamespace(x=x, y=y, z=0.0)
     return points
@@ -135,7 +160,9 @@ class PinchGestureTests(unittest.TestCase):
 
     def test_palm_direction_and_ring_finger_do_not_block_drawing(self):
         image = drawing_landmarks()
-        image[16] = SimpleNamespace(x=0.51, y=0.26, z=0.0)
+        image[13] = SimpleNamespace(x=0.51, y=0.36, z=0.0)
+        image[14] = SimpleNamespace(x=0.51, y=0.26, z=0.0)
+        image[16] = SimpleNamespace(x=0.51, y=0.25, z=0.0)
         contradictory_world = drawing_landmarks()
         contradictory_world[8] = SimpleNamespace(x=0.1, y=0.1, z=0.5)
         contradictory_world[12] = SimpleNamespace(x=0.9, y=0.9, z=-0.5)
@@ -144,6 +171,22 @@ class PinchGestureTests(unittest.TestCase):
             image, 200, 100, contradictory_world
         )
         self.assertTrue(active)
+
+    def test_three_fingers_erase_and_five_fingers_clear(self):
+        _, erase_pointer, draw, erase, clear = paint_gestures(
+            drawing_landmarks(ring_extended=True), 200, 100
+        )
+        self.assertEqual(erase_pointer, (100.0, 25.0))
+        self.assertFalse(draw)
+        self.assertTrue(erase)
+        self.assertFalse(clear)
+
+        _, _, draw, erase, clear = paint_gestures(
+            drawing_landmarks(five_extended=True), 200, 100
+        )
+        self.assertFalse(draw)
+        self.assertFalse(erase)
+        self.assertTrue(clear)
 
     def test_drawing_pose_is_debounced_at_both_ends(self):
         tracker = HandTracker("Right")
@@ -169,6 +212,51 @@ class PinchGestureTests(unittest.TestCase):
         self.assertEqual(
             tracker.update((0.52, 0.5), 0.9, 1.05, draw_pose=False),
             "draw_end",
+        )
+
+    def test_eraser_and_clear_gestures_are_deliberate(self):
+        tracker = HandTracker("Right")
+        self.assertEqual(
+            tracker.update((0.5, 0.5), 0.9, 1.00, erase_pose=True),
+            "hover",
+        )
+        self.assertEqual(
+            tracker.update((0.5, 0.5), 0.9, 1.01, erase_pose=True),
+            "erase_start",
+        )
+        self.assertEqual(
+            tracker.update((0.51, 0.5), 0.9, 1.02, erase_pose=True),
+            "erase_move",
+        )
+        for frame in range(2):
+            self.assertEqual(
+                tracker.update(
+                    (0.51, 0.5), 0.9, 1.03 + frame / 100
+                ),
+                "erase_move",
+            )
+        self.assertEqual(
+            tracker.update((0.51, 0.5), 0.9, 1.05), "erase_end"
+        )
+
+        for frame in range(CLEAR_HOLD_FRAMES - 1):
+            self.assertEqual(
+                tracker.update(
+                    (0.5, 0.5), 0.9, 1.10 + frame / 100,
+                    clear_pose=True,
+                ),
+                "hover",
+            )
+        self.assertEqual(
+            tracker.update(
+                (0.5, 0.5), 0.9, 1.10 + (CLEAR_HOLD_FRAMES - 1) / 100,
+                clear_pose=True,
+            ),
+            "clear_drawings",
+        )
+        self.assertEqual(
+            tracker.update((0.5, 0.5), 0.9, 1.30, clear_pose=True),
+            "hover",
         )
 
     def test_cursor_filters_spikes_and_predicts_along_velocity(self):
@@ -213,6 +301,33 @@ class PinchGestureTests(unittest.TestCase):
         self.assertEqual(len(state.drawings[0]["points"]), 2)
 
         state.set_playing(True)
+        self.assertEqual(state.drawings, [])
+
+    def test_eraser_removes_only_the_area_it_passes_over(self):
+        state = AppState()
+        state.set_playing(False)
+        state.drawings = [{
+            "id": 1,
+            "handId": "Right",
+            "complete": True,
+            "points": [
+                [0.10, 0.50], [0.30, 0.50], [0.50, 0.50],
+                [0.70, 0.50], [0.90, 0.50],
+            ],
+        }]
+        state.handle_vision_event({
+            "type": "erase_start", "handId": "Right",
+            "boardX": 0.50, "boardY": 0.50,
+        })
+
+        self.assertEqual(len(state.drawings), 2)
+        self.assertEqual(state.drawings[0]["points"], [[0.10, 0.50], [0.30, 0.50]])
+        self.assertEqual(state.drawings[1]["points"], [[0.70, 0.50], [0.90, 0.50]])
+
+        state.handle_vision_event({
+            "type": "clear_drawings", "handId": "Right",
+            "boardX": 0.50, "boardY": 0.50,
+        })
         self.assertEqual(state.drawings, [])
 
     def test_grab_snaps_to_a_player_one_piece_width_away(self):
