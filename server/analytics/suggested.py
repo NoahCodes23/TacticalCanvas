@@ -1,28 +1,26 @@
 """Suggested off-ball positions.
 
 For every player on the possession team that isn't currently the ball carrier,
-propose a nearby spot that raises the team's pitch control at the ball. Rendered
-as ghost circles on the projected board so the coach can compare their own
-intuition against the model.
+propose a nearby spot that they would credibly own more than an opponent. The
+ghost circles compare "where you are" against "where a defensible support
+position is within your movement budget".
 
-This is NOT a trained model. It is a bounded gradient-ascent search over the
-same _arrival_time / pitch_control_at heuristic the rest of the tactical
-overlays already use. Two design choices worth calling out:
+Not a trained model. Bounded gradient-ascent search over the same
+_arrival_time / pitch_control_at heuristic the rest of the tactical overlays
+already use. Notes on the objective:
 
-* **Objective = pitch control at ball, not xT.**  xT rewards being closer to
-  goal, so it collapses every suggestion to "run forward" -- interesting
-  once, boring always. Team control at the ball rewards support angles and
-  passing outlets, which is what a coach actually reads a board for.
+* **Score = pitch control at the destination itself.**  An earlier version
+  scored control-at-the-ball, but that quantity is dominated by whoever is
+  already nearest the ball -- a defender moving 5m barely changed it, and no
+  ghost ever cleared the improvement threshold. Scoring at the destination
+  directly answers the coach's question: "if I go there, do I own it or does
+  a defender?" The gain vs. staying put is what shows on the label.
 
 * **Movement budget is 5m.**  A player can only cover ~5m in the time a pass
   takes to arrive. Suggesting they teleport 30m away is a screenshot, not
-  advice. The budget is per-player, along their current velocity (so a run
-  in motion counts toward it) with a small angular search.
-
-The search is a coarse polar sweep followed by a local refine -- ~64 objective
-evaluations per player, ~700 per frame for a 22-player team. That is small
-enough to run every state broadcast without caching. It is still gated behind
-the overlay flag so it doesn't burn cycles when nothing is looking at it.
+  advice. Their current velocity still counts through _arrival_time, so a
+  player already running toward a spot pays less to reach it than a standing
+  one.
 """
 
 from __future__ import annotations
@@ -40,8 +38,8 @@ REFINE_SAMPLES = 8          # local refine around the best coarse hit
 REFINE_RADIUS_M = 1.25
 
 # Ghost circle thresholds. Sub-threshold gains just add visual noise.
-MIN_GAIN = 0.015            # ~1.5 percentage points of team pitch control
-MIN_MOVE_M = 0.75           # too-tiny moves feel like a jitter, not a call
+MIN_GAIN = 0.05             # ~5 percentage points of local pitch control
+MIN_MOVE_M = 1.0            # too-tiny moves feel like a jitter, not a call
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -71,62 +69,70 @@ def _mutated(base: Any, x: float, y: float) -> Any:
     return p
 
 
-def _score(
+def _score_at_destination(
     players: list[Any],
     swap_id: str,
     x: float,
     y: float,
     team: str,
-    ball_x: float,
-    ball_y: float,
 ) -> float:
-    """Team pitch control at the ball if one player is moved to (x, y)."""
+    """Team pitch control AT (x, y) if the swap_id player is moved to (x, y).
+    That player's arrival time collapses to 0, so this is essentially "how
+    dominant is my ownership of this spot vs. the nearest opponent"."""
     swapped = [
         _mutated(p, x, y) if p.id == swap_id else p
         for p in players
     ]
-    return pitch_control_at(swapped, team, ball_x, ball_y)
+    return pitch_control_at(swapped, team, x, y)
 
 
 def _search_one(
     players: list[Any],
     player: Any,
     team: str,
-    ball_x: float,
-    ball_y: float,
     pitch_length: float,
     pitch_width: float,
-    baseline: float,
 ) -> tuple[float, float, float] | None:
-    """Return (x, y, gain) or None if the best candidate isn't worth drawing."""
+    """Return (x, y, gain) or None if the best candidate isn't worth drawing.
+
+    Baseline is control at the candidate spot *without* moving anyone; score
+    is control at that same spot *with* this player standing on it. Gain > 0
+    means "I would create a defensible spot the team doesn't currently own."
+    """
     cx, cy = float(player.x), float(player.y)
 
-    best_x, best_y, best_score = cx, cy, baseline
+    best_x, best_y, best_gain = cx, cy, 0.0
     for i in range(1, RADIAL_SAMPLES + 1):
         r = MOVE_BUDGET_M * i / RADIAL_SAMPLES
         for j in range(ANGULAR_SAMPLES):
             theta = 2.0 * math.pi * j / ANGULAR_SAMPLES
             x = _clamp(cx + r * math.cos(theta), 0.5, pitch_length - 0.5)
             y = _clamp(cy + r * math.sin(theta), 0.5, pitch_width - 0.5)
-            s = _score(players, player.id, x, y, team, ball_x, ball_y)
-            if s > best_score:
-                best_x, best_y, best_score = x, y, s
+            baseline = pitch_control_at(players, team, x, y)
+            if baseline > 0.95:
+                # Already essentially owned by us -- no ghost needed here.
+                continue
+            score = _score_at_destination(players, player.id, x, y, team)
+            gain = score - baseline
+            if gain > best_gain:
+                best_x, best_y, best_gain = x, y, gain
 
-    # Local refine around the coarse best (only if coarse actually improved).
-    if best_score > baseline:
+    # Local refine around the coarse best (only if the coarse pass found one).
+    if best_gain > 0.0:
         for j in range(REFINE_SAMPLES):
             theta = 2.0 * math.pi * j / REFINE_SAMPLES
             x = _clamp(best_x + REFINE_RADIUS_M * math.cos(theta), 0.5, pitch_length - 0.5)
             y = _clamp(best_y + REFINE_RADIUS_M * math.sin(theta), 0.5, pitch_width - 0.5)
-            s = _score(players, player.id, x, y, team, ball_x, ball_y)
-            if s > best_score:
-                best_x, best_y, best_score = x, y, s
+            baseline = pitch_control_at(players, team, x, y)
+            score = _score_at_destination(players, player.id, x, y, team)
+            gain = score - baseline
+            if gain > best_gain:
+                best_x, best_y, best_gain = x, y, gain
 
-    gain = best_score - baseline
     move = math.hypot(best_x - cx, best_y - cy)
-    if gain < MIN_GAIN or move < MIN_MOVE_M:
+    if best_gain < MIN_GAIN or move < MIN_MOVE_M:
         return None
-    return best_x, best_y, gain
+    return best_x, best_y, best_gain
 
 
 def suggested_positions(
@@ -145,15 +151,13 @@ def suggested_positions(
     # Ball carrier = closest own player. Skip them: their positioning is the
     # ball's positioning, and asking them to move is asking to redefine "ball".
     carrier = min(own, key=lambda p: (p.x - bx) ** 2 + (p.y - by) ** 2)
-    baseline = pitch_control_at(players, possession, bx, by)
 
     out: list[dict] = []
     for player in own:
         if player.id == carrier.id:
             continue
         result = _search_one(
-            players, player, possession, bx, by,
-            pitch_length, pitch_width, baseline,
+            players, player, possession, pitch_length, pitch_width,
         )
         if result is None:
             continue
