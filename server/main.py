@@ -169,7 +169,7 @@ async def coach_advice():
         raise HTTPException(503, "No coach API key configured. Set OPENAI_API_KEY in .env.")
 
     model = resolve_model()
-    cache_key = (state.match_id, state.frame_index, state.revision, model)
+    cache_key = (state.match_id, state.frame_index, state.revision, model, state.coaching_team)
     cached = coach_advice_cache.get(cache_key)
     if cached is not None:
         return JSONResponse({**cached, "cached": True})
@@ -182,7 +182,8 @@ async def coach_advice():
             raise HTTPException(409, "The match resumed before analysis started.")
 
         raw_frames = state.coach_frame_inputs()
-        frames = await asyncio.to_thread(state.analyze_coach_frames, raw_frames)
+        coaching_team = state.coaching_team
+        frames = await asyncio.to_thread(state.analyze_coach_frames, raw_frames, coaching_team)
         recent_events = match_data.recent_events(state.media_time_ms / 1000.0, 3)
         try:
             result = await request_coach_advice(
@@ -202,6 +203,7 @@ async def coach_advice():
             "frameIndex": state.frame_index,
             "revision": state.revision,
             "matchId": state.match_id,
+            "coachingTeam": coaching_team,
         }
         coach_advice_cache[cache_key] = response
         # Bound memory while keeping recent paid responses reusable.
@@ -386,6 +388,15 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         state.toggle_pitch_control()
     elif t == "TOGGLE_FORMATION":
         state.toggle_formation()
+    elif t == "SET_COACHING_TEAM":
+        team = p.get("team")
+        if not isinstance(team, str) or not state.set_coaching_team(team):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"invalid coaching team {team!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+    elif t == "TOGGLE_COACHING_TEAM":
+        state.toggle_coaching_team()
     elif t == "SET_EXPERIMENT":
         name = p.get("name")
         enabled = p.get("enabled") if "enabled" in p else None

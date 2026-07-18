@@ -34,6 +34,18 @@
     #coach-copy { white-space: pre-wrap; color: #cbd5e1; font-size: 11px; line-height: 1.5; }
     #coach-card.error { border-color: #7f1d1d; background: #2a1114; }
     #coach-card.error #coach-meta { color: #fca5a5; }
+    #team-picker { display: flex; align-items: center; gap: 8px; margin: 0 0 8px;
+                   padding: 7px 10px; border: 1px solid #334155; border-radius: 7px;
+                   background: #0f1729; font-size: 11px; }
+    #team-picker .label { color: #94a3b8; }
+    #team-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+                   flex: none; }
+    #team-name { font-weight: 700; }
+    #team-picker.home #team-swatch { background: #38bdf8; }
+    #team-picker.home #team-name { color: #38bdf8; }
+    #team-picker.away #team-swatch { background: #fb7185; }
+    #team-picker.away #team-name { color: #fb7185; }
+    #switch-team { margin-left: auto; width: auto; padding: 4px 10px; }
     table { width: 100%; border-collapse: collapse; font: 11px/1.6 ui-monospace, monospace; }
     td { padding: 1px 0; }
     td:last-child { text-align: right; color: #9fb3c8; }
@@ -231,6 +243,11 @@
 
       <h2>Playback</h2>
       <button id="play" class="primary">⏸ Pause &amp; Edit</button>
+      <div id="team-picker" class="home">
+        <span id="team-swatch"></span>
+        <span class="label">Coaching <b id="team-name">Blue</b></span>
+        <button id="switch-team">⇄ Switch side</button>
+      </div>
       <button id="coach-advice" disabled>Pause to get LLM coach advice</button>
       <div id="coach-card" aria-live="polite">
         <div id="coach-meta"></div>
@@ -445,7 +462,8 @@
       button.textContent = "Analyzing 5 tactical snapshots…";
       const card = $("coach-card");
       card.className = "on";
-      $("coach-meta").textContent = "DeepSeek is reading the tactical window…";
+      const side = state?.coachingTeam === "away" ? "Red" : "Blue";
+      $("coach-meta").textContent = `Reading the tactical window for ${side}…`;
       $("coach-copy").textContent = "";
       try {
         const response = await fetch("/api/coach-advice", { method: "POST" });
@@ -480,6 +498,11 @@
     $("reset").onclick = () => {
       clearCoachAdvice();
       conn.send("RESET_SCENARIO");
+    };
+    // Switching sides re-frames all coach advice, so drop any stale card too.
+    $("switch-team").onclick = () => {
+      clearCoachAdvice();
+      conn.send("TOGGLE_COACHING_TEAM");
     };
     $("calib").onclick = () => conn.send("TOGGLE_CALIBRATION");
     $("offside").onclick = () => conn.send("TOGGLE_OFFSIDE");
@@ -642,7 +665,17 @@
       $("ai-freeze").textContent = state.playing ? "Freeze frame" : "Frame frozen";
       $("ai-freeze").classList.toggle("primary", !state.playing);
       updateExperimentalAnalysis();
-      $("d-poss").textContent = `${state.possession} (${state.shadows.length} shadows)`;
+      const team = state.coachingTeam || "home";
+      const picker = $("team-picker");
+      picker.className = team;
+      $("team-name").textContent = team === "home" ? "Blue" : "Red";
+      // Cue the coach button to the current job: defend or build.
+      const inPossession = state.possession === team;
+      $("switch-team").title = inPossession
+        ? "You have the ball — advice is about keeping and advancing it."
+        : "Opponent has the ball — advice is about defending and winning it back.";
+      $("d-poss").textContent =
+        `${state.possession} (${state.shadows.length} shadows) · coaching ${team}`;
     }, 200);
 
     // Compactness / width readout. Excludes the GK (deepest outfielder on each

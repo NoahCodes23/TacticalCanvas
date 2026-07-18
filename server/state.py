@@ -69,6 +69,10 @@ class AppState:
         # so halving the radius means 3.0 -> 2.0, not 3.0 -> 1.5.
         self.shadow_seconds = 2.0
         self.possession = "home"
+        # The side the coach is on. Unlike `possession` (inferred every frame),
+        # this is a deliberate choice the coach makes and it sticks: advice is
+        # always framed from this team, whoever currently has the ball.
+        self.coaching_team = "home"
 
         self.players: list[Player] = match_data.build_players()
         self.ball = (PITCH_LENGTH / 2, PITCH_WIDTH / 2)
@@ -170,6 +174,22 @@ class AppState:
 
     def defending_team(self) -> str:
         return "away" if self.possession == "home" else "home"
+
+    def set_coaching_team(self, team: str) -> bool:
+        """Pick the side the coach is on; return False for an unknown team.
+
+        Bumps the revision so any coach advice cached from the old perspective
+        is invalidated (the cache key carries the revision)."""
+        if team not in ("home", "away"):
+            return False
+        if team != self.coaching_team:
+            self.coaching_team = team
+            self._bump()
+        return True
+
+    def toggle_coaching_team(self) -> None:
+        self.coaching_team = "away" if self.coaching_team == "home" else "home"
+        self._bump()
 
     def enter_edit_mode(self) -> None:
         if not self.edit_mode:
@@ -336,15 +356,17 @@ class AppState:
         }
 
     @staticmethod
-    def analyze_coach_frames(frames: list[dict]) -> list[dict]:
+    def analyze_coach_frames(frames: list[dict], coaching_team: str) -> list[dict]:
         """Reduce a captured frame window to compact per-frame coach briefings.
 
         Runs the full tactical model on each snapshot, then collapses it through
         build_briefing so the LLM receives only a small, ranked summary whose
         ``facts`` list is the whitelist of numbers it may quote. Raw player
         coordinates are deliberately dropped here: if the model can't see a
-        number, it can't invent a stat from it. The coaching side is the team
-        without the ball (the demo is about fixing a goal conceded)."""
+        number, it can't invent a stat from it. ``coaching_team`` is the side the
+        coach picked; every briefing is framed from it, so the advice is about
+        defending and regaining when the opponent has the ball and about
+        building when this team does."""
         analyzed: list[dict] = []
         newest_time = frames[-1]["mediaTimeMs"] if frames else 0.0
         for frame in frames:
@@ -360,13 +382,13 @@ class AppState:
                 receiver_target_limit=None,
                 include_hold_targets=True,
             )
-            coaching_team = "away" if frame["possession"] == "home" else "home"
             briefing = build_briefing(indicators, coaching_team, PITCH_LENGTH, PITCH_WIDTH)
             analyzed.append({
                 "frameIndex": frame["frameIndex"],
                 "mediaTimeMs": frame["mediaTimeMs"],
                 "relativeTimeMs": round(frame["mediaTimeMs"] - newest_time, 1),
                 "possession": frame["possession"],
+                "coachingTeam": coaching_team,
                 "briefing": briefing,
             })
         return analyzed
@@ -646,6 +668,7 @@ class AppState:
             "formations": self.team_formations(),
             "shadowSeconds": self.shadow_seconds,
             "possession": self.possession,
+            "coachingTeam": self.coaching_team,
             "shadows": self.defender_shadows(),
             "matchId": self.match_id,
             "matchLabel": self.match_label,
