@@ -11,7 +11,7 @@ const COL_AI_FAINT = 0x94a3b8;
 const COL_AI_TARGET = 0x22d3ee;
 const COL_DRAWING = 0xef4444;
 const COL_ERASER = 0xffffff;
-const ERASER_RADIUS_M = 2.8;
+const ERASER_RADIUS_M = 5.6;
 
 // Cross-fade length when possession turns over and the shadows change team.
 // Long enough to read as a deliberate handover, short enough that it has
