@@ -12,4 +12,5 @@ if __name__ == "__main__":
         host="127.0.0.1",
         port=int(os.environ.get("TC_PORT", "8000")),
         log_level="warning",
+        ws_per_message_deflate=False,
     )
