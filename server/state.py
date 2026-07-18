@@ -677,6 +677,7 @@ class AppState:
             "matchLabel": self.match_label,
             "availableMatches": match_data.list_matches(),
             "events": match_data.recent_events(self.media_time_ms / 1000.0, 8),
+            "matchStats": match_data.match_stats(self.media_time_ms / 1000.0),
             "serverTimestampMs": now_ms(),
             "pitch": {"length": PITCH_LENGTH, "width": PITCH_WIDTH},
             "players": self._players_snapshot(),

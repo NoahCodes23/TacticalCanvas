@@ -37,6 +37,8 @@
     table { width: 100%; border-collapse: collapse; font: 11px/1.6 ui-monospace, monospace; }
     td { padding: 1px 0; }
     td:last-child { text-align: right; color: #9fb3c8; }
+    #match-stats th { font-weight: 600; text-align: right; padding: 0 0 4px; }
+    #match-stats td:nth-child(2), #match-stats td:nth-child(3) { text-align: right; color: #9fb3c8; }
     .ok { color: #4ade80; } .bad { color: #f87171; } .warnc { color: #fbbf24; }
 
     /* Live match-event feed, newest first. Colour by event kind; the current
@@ -237,6 +239,18 @@
         <div id="coach-copy"></div>
       </div>
       <button id="reset">↺ Reset scenario</button>
+
+      <h2>Match Stats</h2>
+      <table id="match-stats">
+        <tr><th></th><th style="color:#38bdf8;font-size:10px">HOME</th><th style="color:#fb7185;font-size:10px">AWAY</th></tr>
+        <tr><td>Passes completed</td><td id="ms-h-pc">—</td><td id="ms-a-pc">—</td></tr>
+        <tr><td>Passes</td><td id="ms-h-p">—</td><td id="ms-a-p">—</td></tr>
+        <tr><td>Accurate passes</td><td id="ms-h-ap">—</td><td id="ms-a-ap">—</td></tr>
+        <tr><td>Touches in opp. box</td><td id="ms-h-tb">—</td><td id="ms-a-tb">—</td></tr>
+        <tr><td>Corners</td><td id="ms-h-c">—</td><td id="ms-a-c">—</td></tr>
+        <tr><td>Offsides</td><td id="ms-h-o">—</td><td id="ms-a-o">—</td></tr>
+        <tr><td>Throws</td><td id="ms-h-t">—</td><td id="ms-a-t">—</td></tr>
+      </table>
 
       <h2>Tactics</h2>
       <button id="offside">▎ Offside line</button>
@@ -575,6 +589,26 @@
       }));
     }
 
+    function renderMatchStats() {
+      const s = state?.matchStats;
+      if (!s) return;
+      const h = s.home, a = s.away;
+      $("ms-h-pc").textContent = h.passesCompleted;
+      $("ms-a-pc").textContent = a.passesCompleted;
+      $("ms-h-p").textContent = h.passes;
+      $("ms-a-p").textContent = a.passes;
+      $("ms-h-ap").textContent = h.accuratePasses;
+      $("ms-a-ap").textContent = a.accuratePasses;
+      $("ms-h-tb").textContent = h.touchesInBox;
+      $("ms-a-tb").textContent = a.touchesInBox;
+      $("ms-h-c").textContent = h.corners;
+      $("ms-a-c").textContent = a.corners;
+      $("ms-h-o").textContent = h.offsides;
+      $("ms-a-o").textContent = a.offsides;
+      $("ms-h-t").textContent = h.throws;
+      $("ms-a-t").textContent = a.throws;
+    }
+
     setInterval(() => {
       $("d-sock").textContent = conn.connected ? "open" : "closed";
       cls($("d-sock"), conn.connected);
@@ -587,6 +621,7 @@
 
       renderMatches();
       renderMatchEvents();
+      renderMatchStats();
       $("d-rev").textContent = state.revision;
       $("d-frame").textContent = state.frameIndex;
       $("d-time").textContent = `${(state.mediaTimeMs / 1000).toFixed(1)} s`;
