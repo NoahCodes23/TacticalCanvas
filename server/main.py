@@ -6,15 +6,18 @@ import queue as queue_mod
 import re
 import time
 
+import cv2
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import ingest, match_data
 from .coach import CoachServiceError, request_coach_advice
 from .protocol import PROTOCOL_VERSION, Envelope, server_message
 from .state import AppState, now_ms
+from tactical_canvas.calibration.layout import DICTIONARY_ID, MARKER_IDS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIR = os.path.join(ROOT, "web")
@@ -34,6 +37,7 @@ BROADCAST_EVERY = 2  # -> 30Hz snapshots; the clients interpolate between them
 state = AppState()
 clients: set[WebSocket] = set()
 vision_queue: "multiprocessing.Queue | None" = None
+vision_control_queue: "multiprocessing.Queue | None" = None
 vision_proc: "multiprocessing.Process | None" = None
 coach_request_lock = asyncio.Lock()
 coach_advice_cache: dict[tuple, dict] = {}
@@ -109,7 +113,7 @@ async def vision_loop() -> None:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    global vision_queue, vision_proc
+    global vision_queue, vision_control_queue, vision_proc
 
     if os.environ.get("TC_NO_VISION") == "1":
         print("[server] TC_NO_VISION=1 -- vision worker disabled (mouse input only)")
@@ -118,11 +122,12 @@ async def lifespan(app: FastAPI):
         show_preview = os.environ.get("TC_VISION_PREVIEW", "0") == "1"
         ctx = multiprocessing.get_context("spawn")
         vision_queue = ctx.Queue(maxsize=32)
+        vision_control_queue = ctx.Queue(maxsize=8)
         from vision.worker import run as vision_run
 
         vision_proc = ctx.Process(
             target=vision_run,
-            args=(vision_queue, camera, show_preview),
+            args=(vision_queue, camera, show_preview, vision_control_queue),
             daemon=True,
         )
         vision_proc.start()
@@ -157,6 +162,39 @@ async def dashboard():
 @app.get("/projector")
 async def projector():
     return FileResponse(os.path.join(WEB_DIR, "projector.html"))
+
+
+@app.get("/api/calibration/markers/{marker_id}.png")
+async def calibration_marker(marker_id: int):
+    if marker_id not in MARKER_IDS:
+        raise HTTPException(404, "Unknown calibration marker")
+    dictionary = cv2.aruco.getPredefinedDictionary(DICTIONARY_ID)
+    marker = cv2.aruco.generateImageMarker(dictionary, marker_id, 256)
+    encoded, buffer = cv2.imencode(".png", marker)
+    if not encoded:
+        raise HTTPException(500, "Could not render calibration marker")
+    return Response(
+        content=buffer.tobytes(),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
+
+
+def send_vision_control(command_type: str) -> bool:
+    if vision_control_queue is None:
+        return False
+    try:
+        vision_control_queue.put_nowait({"type": command_type})
+        return True
+    except queue_mod.Full:
+        try:
+            vision_control_queue.get_nowait()
+            vision_control_queue.put_nowait({"type": command_type})
+            return True
+        except (queue_mod.Empty, queue_mod.Full):
+            return False
+    except Exception:
+        return False
 
 
 @app.post("/api/coach-advice")
@@ -425,8 +463,17 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
                 "ERROR", {"reason": f"could not load match {match_id!r}"},
                 state.scenario_id, state.next_sequence(), now_ms()))
             return
-    elif t == "TOGGLE_CALIBRATION":
-        state.toggle_calibration()
+    elif t in ("TOGGLE_CALIBRATION", "START_CALIBRATION"):
+        if t == "TOGGLE_CALIBRATION" and state.calibration_overlay:
+            state.cancel_calibration()
+            send_vision_control("cancel_calibration")
+        else:
+            state.start_calibration()
+            if not send_vision_control("start_calibration"):
+                state.fail_calibration("Vision worker is not available")
+    elif t == "CANCEL_CALIBRATION":
+        state.cancel_calibration()
+        send_vision_control("cancel_calibration")
     elif t == "TOGGLE_OFFSIDE":
         state.toggle_offside()
     elif t == "TOGGLE_COMPACTNESS":

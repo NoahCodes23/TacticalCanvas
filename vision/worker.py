@@ -16,30 +16,33 @@ import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
-from tactical_canvas.calibration.models import ProjectorCalibration
+from tactical_canvas.calibration.detector import ArucoMarkerDetector
+from tactical_canvas.calibration.layout import (
+    MARKER_IDS,
+    REQUIRED_MARKER_IDS,
+    create_field_marker_layout,
+)
+from tactical_canvas.calibration.models import FieldCalibration, ProjectorCalibration, Size
+from tactical_canvas.calibration.solver import CalibrationAccumulator
+from vision.gestures import HandTracker, pinch_pointer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 MODEL_PATH = os.path.join(ROOT, "hand_landmarker.task")
 CALIB_PATH = os.path.join(ROOT, "cache", "calibration.json")
 PROJECTOR_CALIB_PATH = os.path.join(ROOT, "cache", "projector-calibration.json")
+FIELD_CALIB_PATH = os.path.join(ROOT, "cache", "field-calibration.json")
 
 DEFAULT_CAMERA_WIDTH = 640
 DEFAULT_CAMERA_HEIGHT = 480
 DEFAULT_CAMERA_FPS = float(os.environ.get("TC_CAMERA_FPS", "60"))
 
 DETECT_WIDTH = int(os.environ.get("TC_DETECT_WIDTH", "480")) or None
-EXTEND_RATIO = 1.15
 LANDMARK_INPUT_PX = 224
-GRAB_FINGERS = 1
-RELEASE_FINGERS = 2
-GESTURE_DEBOUNCE_FRAMES = 2
-SMOOTH_ALPHA = 0.70
-
-MAX_JUMP = 0.25
-JUMP_REJECT_LIMIT = 2
-STALE_MS = 300.0
 HAND_LOST_FRAMES = 6
+CALIBRATION_TIMEOUT_S = 30.0
+CALIBRATION_MAX_JITTER_PX = 6.0
+CALIBRATION_MAX_FIELD_RMSE = 0.02
 
 BOARD_LIMIT = 3.0
 HAND_CONNECTIONS = [
@@ -118,6 +121,31 @@ class Calibration:
         print(f"[vision] saved {CALIB_PATH}")
 
     def load(self) -> bool:
+        if os.path.exists(FIELD_CALIB_PATH):
+            try:
+                calibration = FieldCalibration.load(FIELD_CALIB_PATH)
+                self.H = np.asarray(calibration.camera_to_field, dtype=np.float64)
+                self.camera_size = (
+                    calibration.camera_size.width,
+                    calibration.camera_size.height,
+                )
+                corners = np.asarray(
+                    [[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float64
+                )
+                mapped = cv2.perspectiveTransform(
+                    corners.reshape(-1, 1, 2),
+                    np.asarray(calibration.field_to_camera, dtype=np.float64),
+                ).reshape(-1, 2)
+                self.points = [
+                    tuple(int(round(value)) for value in point) for point in mapped
+                ]
+                self.collecting = False
+                self.source = "aruco-field"
+                print(f"[vision] loaded field calibration from {FIELD_CALIB_PATH}")
+                return True
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                print(f"[vision] could not load field calibration: {error}")
+
         if os.path.exists(PROJECTOR_CALIB_PATH):
             try:
                 calibration = ProjectorCalibration.load(PROJECTOR_CALIB_PATH)
@@ -163,89 +191,10 @@ class Calibration:
             print(f"[vision] count not load calibration: {e}")
             return False
         
-class HandTracker:
-    def __init__(self, hand_id: str) -> None:
-        self.hand_id = hand_id
-        self.grabbing = False
-        self.fingers = 0
-        self.pending = 0
-        self.rejects = 0
-        self.missing = 0
-        self.board: tuple[float, float] | None = None
-        self.last_seen = 0.0
-
-    def update(self, board_pt: tuple[float, float], fingers:int, now:float) -> str | None:
-        stale = (now - self.last_seen) * 1000.0 > STALE_MS
-        self.last_seen = now
-
-        if self.board is None or stale:
-            self.board = board_pt
-            self.rejects = 0
-
-        else:
-            dx = board_pt[0] - self.board[0]
-            dy = board_pt[1] - self.board[1]
-            if math.hypot(dx, dy) > MAX_JUMP and self.rejects < JUMP_REJECT_LIMIT:
-                self.rejects += 1
-                return "grab_move" if self.grabbing else "hover"  # hold position
-            if self.rejects >= JUMP_REJECT_LIMIT:
-                self.board = board_pt  # sustained: the hand really is over there
-                self.rejects = 0
-            else:
-                self.rejects = 0
-                self.board = (
-                    self.board[0] + SMOOTH_ALPHA * dx,
-                    self.board[1] + SMOOTH_ALPHA * dy,
-                )
-
-        self.fingers = fingers
-
-        wants = self.grabbing
-        if fingers == GRAB_FINGERS:
-            wants = True
-        elif fingers >= RELEASE_FINGERS:
-            wants = False
-
-        if wants != self.grabbing:
-            self.pending += 1
-            if self.pending >= GESTURE_DEBOUNCE_FRAMES:
-                self.grabbing = wants
-                self.pending = 0
-                return "grab_start" if wants else "grab_end"
-        else:
-            self.pending = 0
-
-        return "grab_move" if self.grabbing else "hover"
-
-def _px(landmarks, idx: int, w: int, h: int) -> tuple[float, float]:
-    lm = landmarks[idx]
-    return lm.x * w, lm.y * h
-
-
-def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
-    return math.hypot(a[0] - b[0], a[1] - b[1])
-
-
-def _dist3(a, b) -> float:
-    return math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
-
-FINGER_JOINTS = [(6, 8), (10, 12), (14, 16), (18, 20)]
-
-
 def hand_size_px(landmarks, w: int, h: int) -> float:
     xs = [lm.x * w for lm in landmarks]
     ys = [lm.y * h for lm in landmarks]
     return max(max(xs) - min(xs), max(ys) - min(ys))
-
-def count_extended(world_landmarks) -> int:
-    wrist = world_landmarks[0]
-    n = 0
-    for pip, tip in FINGER_JOINTS:
-        reach = _dist3(wrist, world_landmarks[tip])
-        knuckle = _dist3(wrist, world_landmarks[pip])
-        if knuckle > 1e-6 and reach > knuckle * EXTEND_RATIO:
-            n += 1
-    return n
 
 def open_camera(index: int) -> cv2.VideoCapture:
     cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
@@ -386,19 +335,24 @@ def draw_overlay(frame, calib, trackers, fps, hand_count, hand_px):
             continue
         colour = (0, 255, 0) if t.grabbing else (200, 200, 200)
         off = "" if 0 <= t.board[0] <= 1 and 0 <= t.board[1] <= 1 else " off-pitch"
-        label = (f"{t.hand_id} {t.fingers}f {'GRAB' if t.grabbing else 'open'} "
+        label = (f"{t.hand_id} pinch {t.pinch_ratio:.2f} {'GRAB' if t.grabbing else 'open'} "
                  f"({t.board[0]:.2f}, {t.board[1]:.2f}){off}")
         cv2.putText(frame, label, (10, 56 + 24 * list(trackers).index(t.hand_id)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2)
 
-def run(event_queue=None, camera_index: int = 1, show_preview: bool = False) -> None:
+def run(
+    event_queue=None,
+    camera_index: int = 1,
+    show_preview: bool = False,
+    control_queue=None,
+) -> None:
     try:
-        _run_loop(event_queue, camera_index, show_preview)
+        _run_loop(event_queue, camera_index, show_preview, control_queue)
     except KeyboardInterrupt:
         print("[vision] interrupted")
 
 
-def _run_loop(event_queue, camera_index: int, show_preview: bool) -> None:
+def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue) -> None:
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(f"Missing hand landmarker model: {MODEL_PATH}")
 
@@ -448,6 +402,50 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool) -> None:
     submitted_frames = 0
     completed_frames = 0
     overlay = show_preview
+    calibration_active = False
+    calibration_started = 0.0
+    calibration_last_status = 0.0
+    calibration_detector: ArucoMarkerDetector | None = None
+    calibration_accumulator: CalibrationAccumulator | None = None
+
+    def emit_calibration_status(phase: str, **details) -> None:
+        emit({
+            "type": "calibration_status",
+            "phase": phase,
+            "active": phase in ("starting", "scanning", "solving"),
+            **details,
+        })
+
+    def process_calibration_commands() -> None:
+        nonlocal calibration_active, calibration_started
+        nonlocal calibration_detector, calibration_accumulator
+        if control_queue is None:
+            return
+        while True:
+            try:
+                command = control_queue.get_nowait()
+            except (queue_mod.Empty, InterruptedError):
+                return
+            except Exception:
+                return
+            command_type = command.get("type") if isinstance(command, dict) else None
+            if command_type == "start_calibration":
+                calibration_detector = ArucoMarkerDetector()
+                calibration_accumulator = CalibrationAccumulator(
+                    create_field_marker_layout(), minimum_samples=14
+                )
+                calibration_started = time.monotonic()
+                calibration_active = True
+                with state_lock:
+                    trackers.clear()
+                emit_calibration_status(
+                    "starting", progress=0.0, visibleMarkers=0, requiredMarkers=4
+                )
+            elif command_type == "cancel_calibration":
+                calibration_active = False
+                calibration_detector = None
+                calibration_accumulator = None
+                emit_calibration_status("cancelled", progress=0.0)
 
     def on_result(result, _output_image, timestamp_ms: int) -> None:
         nonlocal hand_px, inference_fps, last_result_perf, last_stats_perf
@@ -502,27 +500,26 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool) -> None:
                               for l in result.hand_landmarks)
                 hand_px = 0.8 * hand_px + 0.2 * biggest if hand_px else biggest
 
-            if result.hand_landmarks and calib.ready:
-                for landmarks, world, handedness in zip(
-                    result.hand_landmarks, result.hand_world_landmarks, result.handedness
+            if result.hand_landmarks and calib.ready and not calibration_active:
+                for landmarks, handedness in zip(
+                    result.hand_landmarks, result.handedness, strict=False
                 ):
                     hand_id = handedness[0].category_name
                     if hand_id in seen:
                         continue     
                     seen.add(hand_id)
 
-                    tip = _px(landmarks, 8, w, h) 
-                    bx, by = calib.to_board(*tip, frame_size=(w, h))
+                    pointer, pinch_ratio = pinch_pointer(landmarks, w, h)
+                    bx, by = calib.to_board(*pointer, frame_size=(w, h))
 
                     if not (math.isfinite(bx) and math.isfinite(by)):
                         continue
                     if abs(bx) > BOARD_LIMIT or abs(by) > BOARD_LIMIT:
                         continue
 
-                    fingers = count_extended(world)
                     tracker = trackers.setdefault(hand_id, HandTracker(hand_id))
                     tracker.missing = 0
-                    etype = tracker.update((bx, by), fingers, completed_perf)
+                    etype = tracker.update((bx, by), pinch_ratio, completed_perf)
                     if etype and tracker.board:
                         emit({
                             "type": etype,
@@ -614,6 +611,90 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool) -> None:
                 last_sequence = packet.sequence
                 frame = packet.image
                 h, w = frame.shape[:2]
+                process_calibration_commands()
+                if (
+                    calibration_active
+                    and calibration_detector is not None
+                    and calibration_accumulator is not None
+                ):
+                    detected = calibration_detector.detect(frame)
+                    calibration_accumulator.add_frame(detected)
+                    required_visible = len(
+                        set(detected).intersection(REQUIRED_MARKER_IDS)
+                    )
+                    visible_markers = len(set(detected).intersection(MARKER_IDS))
+                    status_now = time.monotonic()
+                    if status_now - calibration_last_status >= 0.1:
+                        calibration_last_status = status_now
+                        emit_calibration_status(
+                            "scanning",
+                            progress=round(calibration_accumulator.progress, 3),
+                            visibleMarkers=visible_markers,
+                            requiredVisible=required_visible,
+                            requiredMarkers=len(REQUIRED_MARKER_IDS),
+                        )
+                    if calibration_accumulator.ready:
+                        emit_calibration_status(
+                            "solving", progress=1.0, visibleMarkers=visible_markers
+                        )
+                        try:
+                            field_calibration = calibration_accumulator.solve_field(
+                                camera_size=Size(width=w, height=h),
+                                camera_index=camera_index,
+                                camera_fps=camera_fps,
+                            )
+                            if (
+                                field_calibration.camera_jitter
+                                > CALIBRATION_MAX_JITTER_PX
+                                or field_calibration.reprojection_rmse
+                                > CALIBRATION_MAX_FIELD_RMSE
+                            ):
+                                raise RuntimeError(
+                                    "Calibration was unstable; keep the camera still and retry"
+                                )
+                            field_calibration.save(FIELD_CALIB_PATH)
+                            with state_lock:
+                                calib.H = np.asarray(
+                                    field_calibration.camera_to_field,
+                                    dtype=np.float64,
+                                )
+                                calib.camera_size = (w, h)
+                                calib.points = []
+                                calib.collecting = False
+                                calib.source = "aruco-field"
+                                trackers.clear()
+                            calibration_active = False
+                            calibration_detector = None
+                            calibration_accumulator = None
+                            emit_calibration_status(
+                                "succeeded",
+                                progress=1.0,
+                                calibrated=True,
+                                markersUsed=field_calibration.markers_used,
+                                reprojectionRmse=round(
+                                    field_calibration.reprojection_rmse, 5
+                                ),
+                                cameraJitter=round(
+                                    field_calibration.camera_jitter, 2
+                                ),
+                            )
+                        except (OSError, RuntimeError, ValueError) as error:
+                            calibration_active = False
+                            calibration_detector = None
+                            calibration_accumulator = None
+                            emit_calibration_status(
+                                "failed", progress=0.0, reason=str(error)
+                            )
+                    elif status_now - calibration_started >= CALIBRATION_TIMEOUT_S:
+                        final_progress = calibration_accumulator.progress
+                        calibration_active = False
+                        calibration_detector = None
+                        calibration_accumulator = None
+                        emit_calibration_status(
+                            "failed",
+                            progress=round(final_progress, 3),
+                            reason="Timed out before all four field-corner markers were stable",
+                        )
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 if DETECT_WIDTH and w > DETECT_WIDTH:
                     scale = DETECT_WIDTH / w
