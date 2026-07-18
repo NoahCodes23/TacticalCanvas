@@ -29,7 +29,8 @@
 
     const renderer = new PitchRenderer(document.getElementById("stage"),
                                        { showCalibration: true, fieldFill: 0.72,
-                                         fieldOffsetX: 0.035 });
+                                         fieldOffsetX: 0.035,
+                                         lockFieldSize: true });
     const conn = new Connection("projector");
     const offline = document.getElementById("offline");
 

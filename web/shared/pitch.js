@@ -22,6 +22,7 @@ export class PitchRenderer {
     quality = "sharp",
     fieldFill = 0.94,
     fieldOffsetX = 0,
+    lockFieldSize = false,
   } = {}) {
     this.el = el;
     this.showCalibration = showCalibration;
@@ -43,6 +44,8 @@ export class PitchRenderer {
     this.fieldOffsetX = Number.isFinite(requestedFieldOffsetX)
       ? Math.min(0.12, Math.max(-0.12, requestedFieldOffsetX))
       : Math.min(0.12, Math.max(-0.12, fieldOffsetX));
+    this.lockFieldSize = lockFieldSize;
+    this.fieldReferenceSize = null;
     this.renderResolution = this._desiredResolution();
     // Pixi Text is rasterized into its own texture. Keeping those textures at
     // least 2x prevents small glyphs becoming blocky even in performance mode.
@@ -62,6 +65,10 @@ export class PitchRenderer {
       powerPreference: "high-performance",
     });
     el.appendChild(this.app.view);
+    this.fieldReferenceSize = {
+      width: Math.max(1, el.clientWidth),
+      height: Math.max(1, el.clientHeight),
+    };
 
     this.pitchLayer = new PIXI.Graphics();
     this.pitchControlLayer = new PIXI.Container();  // Voronoi shading, under everything
@@ -122,10 +129,20 @@ export class PitchRenderer {
     const w = this.app.renderer.width / this.app.renderer.resolution;
     const h = this.app.renderer.height / this.app.renderer.resolution;
     const aspect = PITCH_L / PITCH_W;
-    let pw = w * this.fieldFill, ph = pw / aspect;
-    if (ph > h * this.fieldFill) { ph = h * this.fieldFill; pw = ph * aspect; }
+    const referenceWidth = this.lockFieldSize
+      ? Math.min(w, this.fieldReferenceSize.width) : w;
+    const referenceHeight = this.lockFieldSize
+      ? Math.min(h, this.fieldReferenceSize.height) : h;
+    let pw = referenceWidth * this.fieldFill, ph = pw / aspect;
+    if (ph > referenceHeight * this.fieldFill) {
+      ph = referenceHeight * this.fieldFill;
+      pw = ph * aspect;
+    }
     const centeredOx = (w - pw) / 2;
-    const ox = Math.min(w - pw, Math.max(0, centeredOx + w * this.fieldOffsetX));
+    const ox = Math.min(
+      w - pw,
+      Math.max(0, centeredOx + referenceWidth * this.fieldOffsetX),
+    );
     this.L = { w, h, pw, ph, ox, oy: (h - ph) / 2, scale: pw / PITCH_L };
     this.geometryVersion++;
     this.overlayDirty = true;
