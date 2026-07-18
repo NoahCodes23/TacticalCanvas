@@ -15,7 +15,7 @@ import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("TC_PORT", "8000"))
-CALIB_PATH = os.path.join(ROOT, "cache", "projector-calibration.json")
+CALIB_PATH = os.path.join(ROOT, "cache", "field-calibration.json")
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -105,7 +105,7 @@ def cmd_start(voice: bool = False) -> int:
     if os.path.exists(CALIB_PATH):
         print(f"calibration: loading {CALIB_PATH}")
     else:
-        print("calibration: not found (run 'python tc.py calibrate')")
+        print("calibration: not found (use Calibrate field in the dashboard)")
     print(f"starting TacticalCanvas on port {PORT} ...")
     proc = subprocess.Popen([sys.executable, "run.py"], cwd=ROOT)
 
@@ -164,46 +164,12 @@ def cmd_restart(voice: bool = False) -> int:
 
 
 def cmd_calibrate() -> int:
-    """Run automatic ArUco calibration and persist it for the vision worker."""
-    if port_busy():
-        print("stopping TacticalCanvas so calibration can use the camera ...")
-        if not stop_stale():
-            return 1
-
-    try:
-        from tactical_canvas import CalibrationError, calibrate_webcam
-    except ImportError as error:
-        print(f"calibration dependencies are unavailable: {error}")
+    """Point users to the in-dashboard calibration owned by the vision worker."""
+    if not port_busy():
+        print("TacticalCanvas is not running. Start it with 'python tc.py start'.")
         return 1
-
-    try:
-        camera_index = int(os.environ.get("TC_CAMERA", "1"))
-        monitor_value = os.environ.get("TC_MONITOR")
-        monitor_index = int(monitor_value) if monitor_value is not None else None
-        calibration = calibrate_webcam(
-            camera_index=camera_index,
-            monitor_index=monitor_index,
-            save_path=CALIB_PATH,
-            metadata={"consumer": "tc.py calibrate"},
-        )
-    except (CalibrationError, OSError, RuntimeError, ValueError) as error:
-        print(f"calibration failed: {error}")
-        return 1
-
-    print(f"calibration saved: {CALIB_PATH}")
-    print(
-        f"  camera    {calibration.camera_size.width}x"
-        f"{calibration.camera_size.height} @ {calibration.camera_fps:.1f} FPS"
-    )
-    print(
-        f"  projector {calibration.projector_size.width}x"
-        f"{calibration.projector_size.height}"
-    )
-    print(
-        f"  fit       {calibration.reprojection_rmse:.2f}px RMSE, "
-        f"{calibration.camera_jitter:.2f}px jitter"
-    )
-    print("run 'python tc.py start' to use it")
+    print(f"open http://localhost:{PORT}/dashboard")
+    print("under Setup, click 'Calibrate field' and follow the live marker status")
     return 0
 
 

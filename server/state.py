@@ -7,7 +7,9 @@ from . import match_data
 from .analytics.experimental import analyze as analyze_experimental
 from .analytics.formation import detect_formation
 from .analytics.reach import reach_polygon
+from .analytics.suggested import suggested_positions
 from .match_data import PITCH_LENGTH, PITCH_WIDTH, Player
+from tactical_canvas.calibration.layout import create_field_marker_layout
 
 GRAB_RADIUS_M = 3.0
 
@@ -56,11 +58,24 @@ class AppState:
 
         self.edit_mode = False
         self.calibration_overlay = False
+        self.calibration_layout = [
+            placement.to_dict() for placement in create_field_marker_layout()
+        ]
+        self.calibration_status = {
+            "phase": "idle",
+            "active": False,
+            "progress": 0.0,
+            "visibleMarkers": 0,
+            "requiredMarkers": 4,
+        }
         self.offside_overlay = False
         self.compactness_overlay = False
         self.shadow_overlay = False
         self.pitch_control_overlay = False
         self.formation_overlay = False
+        self.suggested_overlay = False
+        self._suggested_cache_key = None
+        self._suggested_cache = []
         self.experiments = dict(EXPERIMENT_DEFAULTS)
         # Sized by the shape it draws rather than the number: 2s puts a standing
         # player's reach at ~8m, half of what the old 3s default drew. Reach is
@@ -248,6 +263,9 @@ class AppState:
         self.shadow_overlay = False
         self.pitch_control_overlay = False
         self.formation_overlay = False
+        self.suggested_overlay = False
+        self._suggested_cache_key = None
+        self._suggested_cache = []
         self.experiments = dict(EXPERIMENT_DEFAULTS)
         self._experimental_cache_key = None
         self._experimental_cache = None
@@ -360,7 +378,41 @@ class AppState:
         return analyzed
 
     def toggle_calibration(self) -> None:
-        self.calibration_overlay = not self.calibration_overlay
+        if self.calibration_overlay:
+            self.cancel_calibration()
+        else:
+            self.start_calibration()
+
+    def start_calibration(self) -> None:
+        self.calibration_overlay = True
+        self.calibration_status = {
+            "phase": "starting",
+            "active": True,
+            "progress": 0.0,
+            "visibleMarkers": 0,
+            "requiredMarkers": 4,
+        }
+        self.grabbed.clear()
+        self.cursors.clear()
+        self._bump()
+
+    def cancel_calibration(self) -> None:
+        self.calibration_overlay = False
+        self.calibration_status = {
+            **self.calibration_status,
+            "phase": "cancelled",
+            "active": False,
+        }
+        self._bump()
+
+    def fail_calibration(self, reason: str) -> None:
+        self.calibration_overlay = False
+        self.calibration_status = {
+            **self.calibration_status,
+            "phase": "failed",
+            "active": False,
+            "reason": reason,
+        }
         self._bump()
 
     def toggle_offside(self) -> None:
@@ -382,6 +434,35 @@ class AppState:
     def toggle_formation(self) -> None:
         self.formation_overlay = not self.formation_overlay
         self._bump()
+
+    def toggle_suggested(self) -> None:
+        self.suggested_overlay = not self.suggested_overlay
+        self._suggested_cache_key = None
+        self._bump()
+
+    def suggested_positions_snapshot(self) -> list[dict]:
+        """Ghost-position suggestions for the possession team. Empty when off.
+        Cached per (frame, revision, ball) so a paused edit that shifts a
+        defender re-runs it, but idle playback doesn't."""
+        if not self.suggested_overlay:
+            return []
+        cache_key = (
+            self.frame_index,
+            self.revision,
+            self.possession,
+            round(self.ball[0], 2),
+            round(self.ball[1], 2),
+        )
+        if cache_key != self._suggested_cache_key:
+            self._suggested_cache = suggested_positions(
+                self.players,
+                self.ball,
+                self.possession,
+                PITCH_LENGTH,
+                PITCH_WIDTH,
+            )
+            self._suggested_cache_key = cache_key
+        return self._suggested_cache
 
     def set_experiment(self, name: str, enabled: bool | None = None) -> bool:
         """Enable/toggle one allow-listed experiment; return False if unknown."""
@@ -505,6 +586,17 @@ class AppState:
     def handle_vision_event(self, evt: dict) -> None:
         etype = evt.get("type")
 
+        if etype == "calibration_status":
+            self.calibration_status = {
+                **self.calibration_status,
+                **{key: value for key, value in evt.items() if key != "type"},
+            }
+            self.calibration_overlay = bool(self.calibration_status.get("active"))
+            if evt.get("calibrated"):
+                self.vision_stats["calibrated"] = True
+            self._bump()
+            return
+
         if etype == "vision_stats":
             received_at_ms = now_ms()
             captured_at_ms = evt.get("capturedAtMs", received_at_ms)
@@ -531,6 +623,12 @@ class AppState:
             hand = evt.get("handId", "?")
             self.cursors.pop(hand, None)
             self.drag_end(hand)
+            return
+
+        if self.calibration_status.get("active"):
+            # Async MediaPipe results submitted just before calibration started
+            # may arrive after the markers appear. Do not let those stale hand
+            # events repopulate cursors or move a piece during calibration.
             return
 
         hand = evt.get("handId", "?")
@@ -612,6 +710,8 @@ class AppState:
             "players": self._players_snapshot(),
             "cursors": self._cursors_snapshot(),
             "vision": self.vision_stats,
+            "calibrationOverlay": self.calibration_overlay,
+            "calibration": self.calibration_status,
             "serverTimestampMs": now_ms(),
         }
 
@@ -624,11 +724,15 @@ class AppState:
             "mediaTimeMs": round(self.media_time_ms, 1),
             "editMode": self.edit_mode,
             "calibrationOverlay": self.calibration_overlay,
+            "calibrationLayout": self.calibration_layout,
+            "calibration": self.calibration_status,
             "offsideOverlay": self.offside_overlay,
             "compactnessOverlay": self.compactness_overlay,
             "shadowOverlay": self.shadow_overlay,
             "pitchControlOverlay": self.pitch_control_overlay,
             "formationOverlay": self.formation_overlay,
+            "suggestedOverlay": self.suggested_overlay,
+            "suggestedPositions": self.suggested_positions_snapshot(),
             "experiments": dict(self.experiments),
             "experimentalAnalysis": self.experimental_analysis(),
             "formations": self.team_formations(),
@@ -639,6 +743,7 @@ class AppState:
             "matchLabel": self.match_label,
             "availableMatches": match_data.list_matches(),
             "events": match_data.recent_events(self.media_time_ms / 1000.0, 8),
+            "matchStats": match_data.match_stats(self.media_time_ms / 1000.0),
             "serverTimestampMs": now_ms(),
             "pitch": {"length": PITCH_LENGTH, "width": PITCH_WIDTH},
             "players": self._players_snapshot(),

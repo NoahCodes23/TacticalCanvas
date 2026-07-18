@@ -22,7 +22,15 @@ $env:TC_VISION_PREVIEW="1"    # enable the diagnostic OpenCV window
 ```
 
 After changing the camera resolution or physically moving the camera/projector,
-run `python tc.py calibrate` again.
+open the projector view, then click **Calibrate field** under Setup in the
+dashboard. Six ArUco markers are rendered inside the known 105 x 68 field and
+the running vision worker automatically collects them. Keep the camera still
+until the dashboard reports success; no OpenCV window or corner clicking is
+required. `python tc.py calibrate` now points to this web flow.
+
+Hand control uses a thumb/index pinch. The pointer is the midpoint of the two
+fingertips: close the pinch to pick up the nearest piece, move while pinched,
+and open the pinch to release it.
 
 For the projector itself, enable Game/Low Latency mode and disable motion
 interpolation, keystone correction, noise reduction, and other image processing
@@ -111,15 +119,3 @@ requests. The LLM receives model data, not video images, and is explicitly told
 that the underlying indicators are experimental heuristics rather than
 validated predictions. Every request also enforces OpenRouter Zero Data
 Retention routing with `provider.zdr=true`.
-
-### Git safety
-
-Calibration/latency and experimental analytics are intentionally separate
-commits. To remove only the experiment after it is committed:
-
-```powershell
-git log --oneline -2
-git revert <experimental-analytics-commit>
-```
-
-All existing calibration and latency work remains in the earlier commit.

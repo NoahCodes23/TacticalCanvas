@@ -5,8 +5,8 @@ from collections import defaultdict
 import cv2
 import numpy as np
 
-from .layout import REQUIRED_MARKER_IDS, MarkerPlacement
-from .models import DisplayInfo, ProjectorCalibration, Size
+from .layout import FieldMarkerPlacement, REQUIRED_MARKER_IDS, MarkerPlacement
+from .models import DisplayInfo, FieldCalibration, ProjectorCalibration, Size
 
 
 class CalibrationAccumulator:
@@ -14,7 +14,7 @@ class CalibrationAccumulator:
 
     def __init__(
         self,
-        layout: list[MarkerPlacement],
+        layout: list[MarkerPlacement] | list[FieldMarkerPlacement],
         minimum_samples: int = 14,
         maximum_samples: int = 60,
     ) -> None:
@@ -97,4 +97,64 @@ class CalibrationAccumulator:
             reprojection_rmse=float(np.sqrt(np.mean(np.square(errors)))),
             camera_jitter=float(np.sqrt(np.mean(np.square(all_jitter)))),
             markers_used=markers_used,
+        )
+
+    def solve_field(
+        self,
+        camera_size: Size,
+        camera_index: int = 0,
+        camera_fps: float = 30.0,
+    ) -> FieldCalibration:
+        """Solve camera pixels directly into normalized field coordinates."""
+
+        source, destination, all_jitter, markers_used = self._correspondences()
+        camera_to_field, _mask = cv2.findHomography(source, destination, method=0)
+        if camera_to_field is None or not np.isfinite(camera_to_field).all():
+            raise RuntimeError("OpenCV could not solve the field calibration homography")
+        try:
+            field_to_camera = np.linalg.inv(camera_to_field)
+        except np.linalg.LinAlgError as error:
+            raise RuntimeError("The field calibration homography is singular") from error
+        projected = cv2.perspectiveTransform(
+            source.reshape(-1, 1, 2), camera_to_field
+        ).reshape(-1, 2)
+        errors = np.linalg.norm(projected - destination, axis=1)
+        return FieldCalibration(
+            camera_size=camera_size,
+            camera_index=camera_index,
+            camera_fps=camera_fps,
+            camera_to_field=camera_to_field.tolist(),
+            field_to_camera=field_to_camera.tolist(),
+            reprojection_rmse=float(np.sqrt(np.mean(np.square(errors)))),
+            camera_jitter=float(np.sqrt(np.mean(np.square(all_jitter)))),
+            markers_used=markers_used,
+        )
+
+    def _correspondences(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
+        if not self.ready:
+            raise RuntimeError("All four corner markers need more observations")
+
+        camera_points: list[np.ndarray] = []
+        destination_points: list[np.ndarray] = []
+        jitter_distances: list[np.ndarray] = []
+        markers_used: list[int] = []
+        for marker_id in sorted(self._samples):
+            samples = self._samples[marker_id]
+            if len(samples) < self.minimum_samples:
+                continue
+            representative = np.median(np.stack(samples), axis=0).astype(np.float32)
+            camera_points.append(representative)
+            destination_points.append(self._layout[marker_id].corners)
+            jitter_distances.extend(
+                np.linalg.norm(sample - representative, axis=1) for sample in samples
+            )
+            markers_used.append(marker_id)
+
+        return (
+            np.concatenate(camera_points).astype(np.float32),
+            np.concatenate(destination_points).astype(np.float32),
+            np.concatenate(jitter_distances),
+            markers_used,
         )

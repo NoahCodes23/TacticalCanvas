@@ -6,16 +6,18 @@ import queue as queue_mod
 import re
 import time
 
+import cv2
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import match_data
+from . import ingest, match_data
 from .coach import CoachServiceError, request_coach_advice
 from .protocol import PROTOCOL_VERSION, Envelope, server_message
 from .state import AppState, now_ms
+from tactical_canvas.calibration.layout import DICTIONARY_ID, MARKER_IDS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIR = os.path.join(ROOT, "web")
@@ -35,6 +37,7 @@ BROADCAST_EVERY = 2  # -> 30Hz snapshots; the clients interpolate between them
 state = AppState()
 clients: set[WebSocket] = set()
 vision_queue: "multiprocessing.Queue | None" = None
+vision_control_queue: "multiprocessing.Queue | None" = None
 vision_proc: "multiprocessing.Process | None" = None
 coach_request_lock = asyncio.Lock()
 coach_advice_cache: dict[tuple, dict] = {}
@@ -110,7 +113,7 @@ async def vision_loop() -> None:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    global vision_queue, vision_proc
+    global vision_queue, vision_control_queue, vision_proc
 
     if os.environ.get("TC_NO_VISION") == "1":
         print("[server] TC_NO_VISION=1 -- vision worker disabled (mouse input only)")
@@ -119,11 +122,12 @@ async def lifespan(app: FastAPI):
         show_preview = os.environ.get("TC_VISION_PREVIEW", "0") == "1"
         ctx = multiprocessing.get_context("spawn")
         vision_queue = ctx.Queue(maxsize=32)
+        vision_control_queue = ctx.Queue(maxsize=8)
         from vision.worker import run as vision_run
 
         vision_proc = ctx.Process(
             target=vision_run,
-            args=(vision_queue, camera, show_preview),
+            args=(vision_queue, camera, show_preview, vision_control_queue),
             daemon=True,
         )
         vision_proc.start()
@@ -158,6 +162,39 @@ async def dashboard():
 @app.get("/projector")
 async def projector():
     return FileResponse(os.path.join(WEB_DIR, "projector.html"))
+
+
+@app.get("/api/calibration/markers/{marker_id}.png")
+async def calibration_marker(marker_id: int):
+    if marker_id not in MARKER_IDS:
+        raise HTTPException(404, "Unknown calibration marker")
+    dictionary = cv2.aruco.getPredefinedDictionary(DICTIONARY_ID)
+    marker = cv2.aruco.generateImageMarker(dictionary, marker_id, 256)
+    encoded, buffer = cv2.imencode(".png", marker)
+    if not encoded:
+        raise HTTPException(500, "Could not render calibration marker")
+    return Response(
+        content=buffer.tobytes(),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
+
+
+def send_vision_control(command_type: str) -> bool:
+    if vision_control_queue is None:
+        return False
+    try:
+        vision_control_queue.put_nowait({"type": command_type})
+        return True
+    except queue_mod.Full:
+        try:
+            vision_control_queue.get_nowait()
+            vision_control_queue.put_nowait({"type": command_type})
+            return True
+        except (queue_mod.Empty, queue_mod.Full):
+            return False
+    except Exception:
+        return False
 
 
 @app.post("/api/coach-advice")
@@ -321,6 +358,57 @@ async def list_prepared_matches():
     return {"items": match_data.list_matches()}
 
 
+# --------------------------------------------------------------------------- #
+# scenario ingest: run tools/prepare_video against an uploaded clip
+# --------------------------------------------------------------------------- #
+@app.post("/api/scenarios/ingest")
+async def start_ingest(request: Request):
+    """Body: {"videoName": "<file in data/uploads/>", "label": "<optional>"}.
+    Returns the job id; poll GET /api/scenarios/ingest/{id} for progress."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "expected JSON body")
+    video_name = body.get("videoName")
+    if not isinstance(video_name, str) or not video_name.strip():
+        raise HTTPException(400, "videoName required")
+    if video_name != os.path.basename(video_name) or video_name.startswith("."):
+        raise HTTPException(400, "bad videoName")
+    label = body.get("label") if isinstance(body.get("label"), str) else None
+    try:
+        job = ingest.create_job(video_name, label=label)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(503, str(e)) from e
+    asyncio.create_task(ingest.run(job, label=label))
+    return JSONResponse(job.to_dict())
+
+
+@app.get("/api/scenarios/ingest")
+async def list_ingest_jobs():
+    return {"items": ingest.list_jobs()}
+
+
+@app.get("/api/scenarios/ingest/{job_id}")
+async def get_ingest_job(job_id: str):
+    job = ingest.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    return job.to_dict()
+
+
+@app.delete("/api/scenarios/ingest/{job_id}")
+async def cancel_ingest_job(job_id: str):
+    job = ingest.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    ok = await ingest.cancel(job)
+    if not ok:
+        raise HTTPException(409, f"job is {job.status}, cannot cancel")
+    return job.to_dict()
+
+
 @app.get("/uploads/{name}")
 async def get_upload(name: str):
     # Reject anything that isn't a plain filename in our upload dir; blocks
@@ -408,8 +496,17 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
                 "ERROR", {"reason": f"could not load match {match_id!r}"},
                 state.scenario_id, state.next_sequence(), now_ms()))
             return
-    elif t == "TOGGLE_CALIBRATION":
-        state.toggle_calibration()
+    elif t in ("TOGGLE_CALIBRATION", "START_CALIBRATION"):
+        if t == "TOGGLE_CALIBRATION" and state.calibration_overlay:
+            state.cancel_calibration()
+            send_vision_control("cancel_calibration")
+        else:
+            state.start_calibration()
+            if not send_vision_control("start_calibration"):
+                state.fail_calibration("Vision worker is not available")
+    elif t == "CANCEL_CALIBRATION":
+        state.cancel_calibration()
+        send_vision_control("cancel_calibration")
     elif t == "TOGGLE_OFFSIDE":
         state.toggle_offside()
     elif t == "TOGGLE_COMPACTNESS":
@@ -420,6 +517,8 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         state.toggle_pitch_control()
     elif t == "TOGGLE_FORMATION":
         state.toggle_formation()
+    elif t == "TOGGLE_SUGGESTED":
+        state.toggle_suggested()
     elif t == "SET_EXPERIMENT":
         name = p.get("name")
         enabled = p.get("enabled") if "enabled" in p else None

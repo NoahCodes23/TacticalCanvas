@@ -12,6 +12,8 @@ CommandType = Literal[
     "DRAG_PLAYER_END",          # {playerId}
     "RESET_SCENARIO",           # {}
     "TOGGLE_CALIBRATION",       # {}
+    "START_CALIBRATION",        # {}
+    "CANCEL_CALIBRATION",       # {}
     "TOGGLE_OFFSIDE",           # {}
     "TOGGLE_COMPACTNESS",       # {}  -- line-to-line + width readout
     "TOGGLE_SHADOWS",           # {}  -- defender reach shadows
