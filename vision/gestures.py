@@ -9,12 +9,14 @@ WORLD_PINCH_CLOSE_RATIO = 0.38
 WORLD_PINCH_RELEASE_RATIO = 0.58
 PINCH_GRAB_FRAMES = 2
 PINCH_RELEASE_FRAMES = 4
-DRAW_START_FRAMES = 3
+DRAW_START_FRAMES = 2
 DRAW_RELEASE_FRAMES = 3
-DRAW_TIP_GAP_RATIO = 0.28
-DRAW_OTHER_FINGER_MARGIN = 0.72
-DRAW_MIN_JOINT_ANGLE = 145.0
-DRAW_MIN_PALM_FACING = 0.48
+ERASE_START_FRAMES = 2
+ERASE_RELEASE_FRAMES = 3
+CLEAR_HOLD_FRAMES = 12
+DRAW_TIP_GAP_RATIO = 0.36
+ERASE_TIP_GAP_RATIO = 0.42
+DRAW_MIN_EXTENSION_RATIO = 1.35
 POSITION_ALPHA_IDLE = 0.18
 POSITION_ALPHA_MOVING = 0.68
 VELOCITY_ALPHA = 0.32
@@ -36,80 +38,107 @@ def _point3(landmarks, index: int) -> tuple[float, float, float]:
     return float(landmark.x), float(landmark.y), float(landmark.z)
 
 
-def _vector(
-    start: tuple[float, float, float], end: tuple[float, float, float]
-) -> tuple[float, float, float]:
-    return tuple(end[i] - start[i] for i in range(3))
-
-
-def _joint_angle(a, b, c) -> float:
-    ba = _vector(b, a)
-    bc = _vector(b, c)
-    denominator = math.sqrt(sum(v * v for v in ba)) * math.sqrt(
-        sum(v * v for v in bc)
-    )
-    if denominator <= 1e-9:
-        return 0.0
-    cosine = max(-1.0, min(1.0, sum(x * y for x, y in zip(ba, bc)) / denominator))
-    return math.degrees(math.acos(cosine))
-
-
 def drawing_pointer(
     landmarks, width: int, height: int, world_landmarks=None
 ) -> tuple[tuple[float, float], bool]:
-    """Return the two-finger pen tip and whether its deliberate pose is active."""
+    """Return the visible two-finger pen tip and whether it is active.
 
-    index_tip_px = _pixel(landmarks, 8, width, height)
-    middle_tip_px = _pixel(landmarks, 12, width, height)
-    pointer = (
-        (index_tip_px[0] + middle_tip_px[0]) / 2.0,
-        (index_tip_px[1] + middle_tip_px[1]) / 2.0,
+    Drawing intentionally ignores palm direction and inferred world depth. If
+    the index and middle fingers visibly form one extended pen in the camera,
+    it should draw whether the palm or the back of the hand faces the lens.
+    """
+
+    draw_pointer, _, draw_pose, _, _ = paint_gestures(
+        landmarks, width, height
+    )
+    return draw_pointer, draw_pose
+
+
+def _finger_extended(
+    landmarks, mcp: int, pip: int, tip: int, width: int, height: int
+) -> bool:
+    mcp_point = _pixel(landmarks, mcp, width, height)
+    pip_point = _pixel(landmarks, pip, width, height)
+    tip_point = _pixel(landmarks, tip, width, height)
+    proximal_length = math.dist(mcp_point, pip_point)
+    return proximal_length >= 2.0 and math.dist(mcp_point, tip_point) >= (
+        DRAW_MIN_EXTENSION_RATIO * proximal_length
     )
 
-    points = world_landmarks or landmarks
-    wrist = _point3(points, 0)
-    index_mcp = _point3(points, 5)
-    pinky_mcp = _point3(points, 17)
-    palm_size = max(math.dist(index_mcp, pinky_mcp), 1e-6)
-    index_tip = _point3(points, 8)
-    middle_tip = _point3(points, 12)
-    ring_tip = _point3(points, 16)
 
-    tip_gap = math.dist(index_tip, middle_tip) / palm_size
-    middle_ring_gap = math.dist(middle_tip, ring_tip) / palm_size
-    separated_from_ring = tip_gap <= middle_ring_gap * DRAW_OTHER_FINGER_MARGIN
+def paint_gestures(
+    landmarks, width: int, height: int
+) -> tuple[
+    tuple[float, float],
+    tuple[float, float],
+    bool,
+    bool,
+    bool,
+]:
+    """Return pen/eraser pointers and visible 2/3/5-finger tool poses."""
 
-    index_straight = (
-        _joint_angle(_point3(points, 5), _point3(points, 6), _point3(points, 8))
-        >= DRAW_MIN_JOINT_ANGLE
-        and _joint_angle(_point3(points, 6), _point3(points, 7), index_tip)
-        >= DRAW_MIN_JOINT_ANGLE
+    index_tip = _pixel(landmarks, 8, width, height)
+    middle_tip = _pixel(landmarks, 12, width, height)
+    ring_tip = _pixel(landmarks, 16, width, height)
+    draw_pointer = (
+        (index_tip[0] + middle_tip[0]) / 2.0,
+        (index_tip[1] + middle_tip[1]) / 2.0,
     )
-    middle_straight = (
-        _joint_angle(_point3(points, 9), _point3(points, 10), middle_tip)
-        >= DRAW_MIN_JOINT_ANGLE
-        and _joint_angle(_point3(points, 10), _point3(points, 11), middle_tip)
-        >= DRAW_MIN_JOINT_ANGLE
+    erase_pointer = (
+        (index_tip[0] + middle_tip[0] + ring_tip[0]) / 3.0,
+        (index_tip[1] + middle_tip[1] + ring_tip[1]) / 3.0,
     )
 
-    palm_a = _vector(wrist, index_mcp)
-    palm_b = _vector(wrist, pinky_mcp)
-    normal = (
-        palm_a[1] * palm_b[2] - palm_a[2] * palm_b[1],
-        palm_a[2] * palm_b[0] - palm_a[0] * palm_b[2],
-        palm_a[0] * palm_b[1] - palm_a[1] * palm_b[0],
+    wrist = _pixel(landmarks, 0, width, height)
+    index_mcp = _pixel(landmarks, 5, width, height)
+    middle_mcp = _pixel(landmarks, 9, width, height)
+    pinky_mcp = _pixel(landmarks, 17, width, height)
+    palm_size = max(
+        math.dist(index_mcp, pinky_mcp),
+        0.75 * math.dist(wrist, middle_mcp),
+        1.0,
     )
-    normal_length = math.sqrt(sum(value * value for value in normal))
-    palm_facing = abs(normal[2]) / max(normal_length, 1e-9)
 
-    active = (
-        tip_gap <= DRAW_TIP_GAP_RATIO
-        and separated_from_ring
-        and index_straight
-        and middle_straight
-        and palm_facing >= DRAW_MIN_PALM_FACING
+    index_extended = _finger_extended(landmarks, 5, 6, 8, width, height)
+    middle_extended = _finger_extended(landmarks, 9, 10, 12, width, height)
+    ring_extended = _finger_extended(landmarks, 13, 14, 16, width, height)
+    pinky_extended = _finger_extended(landmarks, 17, 18, 20, width, height)
+    thumb_tip = _pixel(landmarks, 4, width, height)
+    thumb_ip = _pixel(landmarks, 3, width, height)
+    thumb_extended = (
+        math.dist(thumb_tip, index_mcp) / palm_size >= 0.42
+        and math.dist(thumb_tip, thumb_ip) / palm_size >= 0.15
     )
-    return pointer, active
+    index_middle_close = (
+        math.dist(index_tip, middle_tip) / palm_size <= DRAW_TIP_GAP_RATIO
+    )
+    middle_ring_close = (
+        math.dist(middle_tip, ring_tip) / palm_size <= ERASE_TIP_GAP_RATIO
+    )
+
+    clear_pose = all((
+        thumb_extended,
+        index_extended,
+        middle_extended,
+        ring_extended,
+        pinky_extended,
+    ))
+    erase_pose = (
+        not clear_pose
+        and index_extended
+        and middle_extended
+        and ring_extended
+        and index_middle_close
+        and middle_ring_close
+    )
+    draw_pose = (
+        not erase_pose
+        and not clear_pose
+        and index_extended
+        and middle_extended
+        and index_middle_close
+    )
+    return draw_pointer, erase_pointer, draw_pose, erase_pose, clear_pose
 
 
 def pinch_pointer(
@@ -161,10 +190,15 @@ class HandTracker:
         self.hand_id = hand_id
         self.grabbing = False
         self.drawing = False
+        self.erasing = False
         self.pinch_ratio = float("inf")
         self.pending = 0
         self.draw_pending = 0
         self.draw_release_pending = 0
+        self.erase_pending = 0
+        self.erase_release_pending = 0
+        self.clear_pending = 0
+        self.clear_latched = False
         self.missing = 0
         self.board: tuple[float, float] | None = None
         self.filtered_board: tuple[float, float] | None = None
@@ -258,9 +292,63 @@ class HandTracker:
         now: float,
         world_pinch_ratio: float | None = None,
         draw_pose: bool = False,
+        erase_pose: bool = False,
+        clear_pose: bool = False,
         prediction_horizon_s: float = 0.0,
     ) -> str | None:
         self._update_position(board_pt, now, prediction_horizon_s)
+
+        if clear_pose:
+            if self.drawing:
+                self.drawing = False
+                self.draw_pending = 0
+                return "draw_end"
+            if self.erasing:
+                self.erasing = False
+                self.erase_pending = 0
+                return "erase_end"
+            self.draw_pending = 0
+            self.erase_pending = 0
+            if not self.clear_latched:
+                self.clear_pending += 1
+                if self.clear_pending >= CLEAR_HOLD_FRAMES:
+                    self.clear_pending = 0
+                    self.clear_latched = True
+                    self.grabbing = False
+                    self.pending = 0
+                    return "clear_drawings"
+            return "hover"
+
+        self.clear_pending = 0
+        self.clear_latched = False
+
+        if erase_pose:
+            if self.drawing:
+                self.drawing = False
+                self.draw_pending = 0
+                return "draw_end"
+            self.erase_release_pending = 0
+            self.draw_pending = 0
+            if not self.erasing:
+                self.erase_pending += 1
+                if self.erase_pending >= ERASE_START_FRAMES:
+                    self.erasing = True
+                    self.grabbing = False
+                    self.pending = 0
+                    self.erase_pending = 0
+                    return "erase_start"
+                return "hover"
+            return "erase_move"
+
+        self.erase_pending = 0
+        if self.erasing:
+            self.erase_release_pending += 1
+            if self.erase_release_pending >= ERASE_RELEASE_FRAMES:
+                self.erasing = False
+                self.erase_release_pending = 0
+                return "erase_end"
+            return "erase_move"
+        self.erase_release_pending = 0
 
         if draw_pose:
             self.draw_release_pending = 0
