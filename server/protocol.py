@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 PROTOCOL_VERSION = 1
 CommandType = Literal[
     "SET_PLAYING",              # {playing: bool}
+    "SEEK_TO",                  # {mediaTimeMs}  -- absolute seek, server clock
+    "SET_PLAYBACK_RATE",        # {rate}  -- replay speed, clamped 0.1-4.0
     "ENTER_EDIT_MODE",          # {}
     "EXIT_EDIT_MODE",           # {}
     "DRAG_PLAYER_START",        # {playerId, boardX, boardY}

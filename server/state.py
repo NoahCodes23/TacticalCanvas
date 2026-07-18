@@ -270,12 +270,42 @@ class AppState:
                 self._bump()
         self._bump()
 
+    def seek_to(self, media_time_ms: float) -> None:
+        """Jump the server-owned clock to an absolute media time and keep
+        playing from there. Unlike set_playback_time this does NOT stamp
+        external_clock_last_ms, so tick() goes on advancing the replay itself --
+        this is the seek used by the dashboard scrub bar and skip buttons when
+        no video is attached (a video seek drives the <video> element instead)."""
+        next_media_time_ms = max(0.0, float(media_time_ms))
+        next_frame_index = int(next_media_time_ms / 40.0)
+        # A seek to a distant moment starts a fresh temporal window; keeping
+        # coach history or drawings from the old instant would be misleading.
+        if abs(next_frame_index - self.frame_index) > 2:
+            self._coach_history.clear()
+            self._clear_drawings()
+        self.media_time_ms = next_media_time_ms
+        self.frame_index = next_frame_index
+        if not self.edit_mode:
+            t = self.media_time_ms / 1000.0
+            match_data.advance(self.players, t)
+            self.ball = match_data.ball_position(t)
+            self._update_possession()
+            self._record_coach_frame()
+        self._bump()
+
+    def set_playback_rate(self, rate: float) -> None:
+        """Set the replay speed multiplier (server-owned clock only). Clamped to
+        a sane demo range; tick() multiplies dt by this while auto-advancing."""
+        self.playback_rate = min(max(float(rate), 0.1), 4.0)
+        self._bump()
+
     def reset_scenario(self) -> None:
         self.players = match_data.build_players()
         self.grabbed.clear()
         self._clear_drawings()
         self.edit_mode = False
         self.playing = True
+        self.playback_rate = 1.0
         self.media_time_ms = 0.0
         self.frame_index = 0
         self.ball = match_data.ball_position(0.0)
@@ -307,6 +337,7 @@ class AppState:
         self._experimental_cache_key = None
         self._experimental_cache = None
         self.playing = True
+        self.playback_rate = 1.0
         self.media_time_ms = 0.0
         self.frame_index = 0
         self.ball = match_data.ball_position(0.0)
@@ -851,6 +882,7 @@ class AppState:
             "playbackRate": self.playback_rate,
             "frameIndex": self.frame_index,
             "mediaTimeMs": round(self.media_time_ms, 1),
+            "durationMs": round(match_data.duration_seconds() * 1000.0, 1),
             "editMode": self.edit_mode,
             "calibrationOverlay": self.calibration_overlay,
             "calibrationLayout": self.calibration_layout,
