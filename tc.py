@@ -1,3 +1,8 @@
+"""TacticalCanvas process and calibration commands.
+
+Usage: python tc.py [start|stop|restart|status|calibrate]
+"""
+
 import os
 import socket
 import subprocess
@@ -6,6 +11,7 @@ import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("TC_PORT", "8000"))
+CALIB_PATH = os.path.join(ROOT, "cache", "projector-calibration.json")
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -34,7 +40,23 @@ def process_name(pid: int) -> str | None:
         ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
         capture_output=True, text=True,
     ).stdout.strip()
-    return out.split('","')[0].strip('"') if out.startswith('"') else None
+    if out.startswith('"'):
+        return out.split('","')[0].strip('"')
+
+    # Some Windows configurations return no tasklist row for a process that
+    # Get-Process can still inspect. Keep restart/stop from rejecting our own
+    # Python server as an unknown foreign process.
+    fallback = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f"(Get-Process -Id {pid} -ErrorAction SilentlyContinue).ProcessName",
+        ],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return fallback or None
 
 
 def kill_tree(pid: int) -> None:
@@ -76,6 +98,10 @@ def cmd_start() -> int:
     if not stop_stale():
         return 1
 
+    if os.path.exists(CALIB_PATH):
+        print(f"calibration: loading {CALIB_PATH}")
+    else:
+        print("calibration: not found (run 'python tc.py calibrate')")
     print(f"starting TacticalCanvas on port {PORT} ...")
     proc = subprocess.Popen([sys.executable, "run.py"], cwd=ROOT)
 
@@ -116,6 +142,50 @@ def cmd_restart() -> int:
     return cmd_start()
 
 
+def cmd_calibrate() -> int:
+    """Run automatic ArUco calibration and persist it for the vision worker."""
+    if port_busy():
+        print("stopping TacticalCanvas so calibration can use the camera ...")
+        if not stop_stale():
+            return 1
+
+    try:
+        from tactical_canvas import CalibrationError, calibrate_webcam
+    except ImportError as error:
+        print(f"calibration dependencies are unavailable: {error}")
+        return 1
+
+    try:
+        camera_index = int(os.environ.get("TC_CAMERA", "1"))
+        monitor_value = os.environ.get("TC_MONITOR")
+        monitor_index = int(monitor_value) if monitor_value is not None else None
+        calibration = calibrate_webcam(
+            camera_index=camera_index,
+            monitor_index=monitor_index,
+            save_path=CALIB_PATH,
+            metadata={"consumer": "tc.py calibrate"},
+        )
+    except (CalibrationError, OSError, RuntimeError, ValueError) as error:
+        print(f"calibration failed: {error}")
+        return 1
+
+    print(f"calibration saved: {CALIB_PATH}")
+    print(
+        f"  camera    {calibration.camera_size.width}x"
+        f"{calibration.camera_size.height} @ {calibration.camera_fps:.1f} FPS"
+    )
+    print(
+        f"  projector {calibration.projector_size.width}x"
+        f"{calibration.projector_size.height}"
+    )
+    print(
+        f"  fit       {calibration.reprojection_rmse:.2f}px RMSE, "
+        f"{calibration.camera_jitter:.2f}px jitter"
+    )
+    print("run 'python tc.py start' to use it")
+    return 0
+
+
 def cmd_status() -> int:
     running = port_busy()
     print(f"server    : {'running' if running else 'stopped'} (port {PORT})")
@@ -126,10 +196,17 @@ def cmd_status() -> int:
     else:
         free = camera_free()
         print(f"camera    : {'free' if free else 'BUSY -- something else has it' if free is False else 'unknown'}")
+    print(f"calibration: {'saved' if os.path.exists(CALIB_PATH) else 'missing'} ({CALIB_PATH})")
     return 0
 
 
-COMMANDS = {"start": cmd_start, "stop": cmd_stop, "restart": cmd_restart, "status": cmd_status}
+COMMANDS = {
+    "start": cmd_start,
+    "stop": cmd_stop,
+    "restart": cmd_restart,
+    "status": cmd_status,
+    "calibrate": cmd_calibrate,
+}
 
 if __name__ == "__main__":
     action = sys.argv[1] if len(sys.argv) > 1 else "start"

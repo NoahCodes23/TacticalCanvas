@@ -12,8 +12,13 @@ from server.analytics.reach import (
 def test_standing_player_reaches_equally_in_all_directions():
     d = [reach_distance(0.0, 2.0) for _ in range(4)]
     assert len(set(d)) == 1
-    # No reaction drift, then accelerate for the rest of the horizon.
-    expected = 0.5 * A_MAX_MS2 * (2.0 - REACTION_S) ** 2
+    # No reaction drift; accelerate to V_MAX, then cruise for the remainder.
+    moving_time = 2.0 - REACTION_S
+    accel_time = min(moving_time, V_MAX_MS / A_MAX_MS2)
+    expected = (
+        0.5 * A_MAX_MS2 * accel_time**2
+        + V_MAX_MS * (moving_time - accel_time)
+    )
     assert d[0] == pytest.approx(expected)
 
 

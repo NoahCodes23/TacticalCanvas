@@ -55,6 +55,16 @@ def snapshot_message() -> dict:
     )
 
 
+def vision_message() -> dict:
+    return server_message(
+        "VISION_UPDATE",
+        state.vision_snapshot(),
+        state.scenario_id,
+        state.next_sequence(),
+        now_ms(),
+    )
+
+
 async def tick_loop() -> None:
     dt = 1.0 / TICK_HZ
     n = 0
@@ -72,9 +82,10 @@ async def tick_loop() -> None:
 async def vision_loop() -> None:
     while True:
         if vision_queue is None:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.02)
             continue
         drained = 0
+        changed = False
         while drained < 64:
             try:
                 evt = vision_queue.get_nowait()
@@ -83,8 +94,13 @@ async def vision_loop() -> None:
             except Exception:
                 break
             state.handle_vision_event(evt)
+            changed = True
             drained += 1
-        await asyncio.sleep(0.004)
+        if changed and clients:
+            # Vision controls are latency-sensitive; don't wait for the next
+            # scheduled match snapshot. One broadcast covers this drained batch.
+            await broadcast(vision_message())
+        await asyncio.sleep(0.001)
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -94,12 +110,15 @@ async def lifespan(app: FastAPI):
         print("[server] TC_NO_VISION=1 -- vision worker disabled (mouse input only)")
     else:
         camera = int(os.environ.get("TC_CAMERA", "1"))
+        show_preview = os.environ.get("TC_VISION_PREVIEW", "0") == "1"
         ctx = multiprocessing.get_context("spawn")
-        vision_queue = ctx.Queue(maxsize=256)
+        vision_queue = ctx.Queue(maxsize=32)
         from vision.worker import run as vision_run
 
         vision_proc = ctx.Process(
-            target=vision_run, args=(vision_queue, camera, True), daemon=True
+            target=vision_run,
+            args=(vision_queue, camera, show_preview),
+            daemon=True,
         )
         vision_proc.start()
         print(f"[server] vision worker started (pid {vision_proc.pid}, camera {camera})")
@@ -311,6 +330,15 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         state.toggle_pitch_control()
     elif t == "TOGGLE_FORMATION":
         state.toggle_formation()
+    elif t == "SET_EXPERIMENT":
+        name = p.get("name")
+        enabled = p.get("enabled") if "enabled" in p else None
+        valid_enabled = enabled is None or isinstance(enabled, bool)
+        if not isinstance(name, str) or not valid_enabled or not state.set_experiment(name, enabled):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"invalid experiment setting {name!r}={enabled!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
     elif t == "SET_SHADOW_SECONDS":
         try:
             state.set_shadow_seconds(float(p.get("seconds", 2.0)))

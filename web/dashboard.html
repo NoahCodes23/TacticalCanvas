@@ -66,7 +66,6 @@
     #compact td { padding: 1px 8px 1px 0; color: #c9d6e3; }
     #compact td.lab { color: #7d8fa1; font: 600 10px system-ui, sans-serif;
                       letter-spacing: .08em; text-transform: uppercase; }
-
     /* Video replay panel, top-right of the stage. Hidden until the dashboard
        is opened with ?video=<name>; then it plays the uploaded clip alongside
        the pitch. Draggable header (left as a stretch) not implemented; it just
@@ -94,6 +93,79 @@
              font-size: 11px; color: #7d8fa1; text-decoration: none;
              border: 1px solid #2a3947; border-radius: 5px; }
     a.back:hover { color: #e6edf3; border-color: #3a4c5e; }
+    /* Opt-in analytics HUD. It is absent from layout and paint until the
+       technicalIndicators experiment is enabled. */
+    #ai-panel { position: absolute; top: 14px; right: 14px; z-index: 3;
+                display: none; width: min(370px, 43%); max-height: calc(100% - 28px);
+                overflow: hidden auto; background: rgba(7, 12, 18, .91);
+                border: 1px solid #334155; border-radius: 10px; padding: 12px;
+                box-shadow: 0 12px 40px #0008; pointer-events: auto; }
+    #ai-panel.on { display: block; }
+    #ai-panel h3 { margin: 0; color: #fde047; font-size: 12px;
+                   text-transform: uppercase; letter-spacing: .1em; }
+    #ai-panel h4 { margin: 11px 0 5px; color: #94a3b8; font-size: 9px;
+                   text-transform: uppercase; letter-spacing: .12em; }
+    #ai-model { margin-top: 3px; color: #64748b; font-size: 9px; }
+    .ai-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .ai-stat { display: flex; justify-content: space-between; gap: 8px;
+               padding: 2px 3px; border: 0; border-radius: 3px;
+               font: 10px/1.45 ui-monospace, monospace; }
+    .ai-stat span:first-child { color: #7d8fa1; }
+    .ai-stat span:last-child { color: #dbeafe; text-align: right; }
+    .ai-stat.explainable { cursor: help; }
+    .ai-stat.explainable:hover, .ai-stat.explainable:focus,
+    .ai-stat.explainable.selected { outline: none; background: #243244; }
+    .ai-stat.explainable span:first-child::after { content: " ?"; color: #fbbf24; }
+    .ai-team-head { color: #94a3b8; font: 600 9px system-ui, sans-serif;
+                    text-transform: uppercase; letter-spacing: .08em; }
+    .ai-team-head.home { color: #38bdf8; }
+    .ai-team-head.away { color: #fb7185; }
+    .ai-rec { margin-top: 5px; padding: 7px 8px; border-radius: 6px;
+              background: #111c27; border-left: 3px solid #64748b; cursor: help; }
+    .ai-rec:hover, .ai-rec:focus { outline: 1px solid #64748b; background: #172536; }
+    .ai-rec.selected { outline: 1px solid #fbbf24; background: #1d2d3f; }
+    .ai-rec.r1 { border-left-color: #fde047; }
+    .ai-rec.r2 { border-left-color: #4ade80; }
+    .ai-rec.r3 { border-left-color: #c084fc; }
+    .ai-rec-title { display: flex; justify-content: space-between;
+                    color: #e2e8f0; font: 600 11px system-ui, sans-serif; }
+    .ai-rec-meta { margin-top: 3px; color: #9fb3c8;
+                   font: 9px/1.45 ui-monospace, monospace; }
+    .ai-rec-why { margin-top: 3px; color: #7d8fa1; font-size: 9px; }
+    .experimental-note { border-left: 2px solid #f59e0b; padding-left: 8px;
+                         line-height: 1.45; }
+    .ai-legend { display: flex; flex-wrap: wrap; gap: 4px 9px; margin: 9px 0 5px;
+                 color: #94a3b8; font: 9px ui-monospace, monospace; }
+    .ai-key { display: inline-flex; align-items: center; gap: 4px; }
+    .ai-swatch { width: 17px; height: 3px; border-radius: 2px; background: #94a3b8; }
+    .ai-swatch.one { background: #fde047; } .ai-swatch.two { background: #4ade80; }
+    .ai-swatch.three { background: #c084fc; } .ai-swatch.target { background: #22d3ee; }
+    #ai-inspector { margin-top: 9px; padding: 8px; border: 1px solid #334155;
+                    border-radius: 6px; background: #0c151f; }
+    #ai-inspector-title { color: #fbbf24; font: 600 11px system-ui, sans-serif; }
+    #ai-inspector-value { float: right; color: #dbeafe; font: 10px ui-monospace, monospace; }
+    #ai-inspector-meaning { margin-top: 4px; color: #cbd5e1; font-size: 10px; line-height: 1.4; }
+    #ai-inspector-formula, #ai-inspector-read { margin-top: 4px; color: #7d8fa1;
+                                               font: 9px/1.4 ui-monospace, monospace; }
+    .experiment-card { margin-bottom: 6px; border: 1px solid #263747;
+                       border-radius: 7px; background: #111a23; overflow: hidden; }
+    button.experiment-toggle { display: flex; align-items: center; justify-content: space-between;
+                               margin: 0; border: 0; border-radius: 0; background: transparent; }
+    button.experiment-toggle:hover { background: #192735; }
+    button.experiment-toggle.primary { background: #163a66; }
+    .experiment-copy { display: flex; flex-direction: column; gap: 2px; }
+    .experiment-copy small { color: #7d8fa1; font-size: 10px; font-weight: 400; }
+    .switch-state { min-width: 32px; padding: 3px 5px; border-radius: 999px;
+                    background: #263442; color: #94a3b8; text-align: center;
+                    font: 700 9px ui-monospace, monospace; }
+    .experiment-toggle.primary .switch-state { background: #22c55e; color: #052e16; }
+    .experiment-card .detail { padding: 0 10px 8px; color: #71869a;
+                               font-size: 10px; line-height: 1.4; }
+    .demo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 8px; }
+    .demo-grid button { margin: 0; padding: 7px 8px; font-size: 10px; text-align: center; }
+    .demo-grid button:first-child { grid-column: 1 / -1; border-color: #a16207; }
+    .lab-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .lab-actions button { margin: 0; padding: 7px 8px; font-size: 10px; text-align: center; }
   </style>
 </head>
 <body>
@@ -115,6 +187,25 @@
           <tr><td class="lab">mid → fwd</td><td id="cm-hmf">—</td><td id="cm-amf">—</td></tr>
           <tr><td class="lab">width</td><td id="cm-hw">—</td><td id="cm-aw">—</td></tr>
         </table>
+      </div>
+      <div id="ai-panel">
+        <h3>Experimental analysis</h3>
+        <div id="ai-model"></div>
+        <div class="ai-legend" aria-label="Analysis overlay legend">
+          <span class="ai-key"><i class="ai-swatch one"></i>#1 pass</span>
+          <span class="ai-key"><i class="ai-swatch two"></i>#2 pass</span>
+          <span class="ai-key"><i class="ai-swatch three"></i>#3 pass</span>
+          <span class="ai-key"><i class="ai-swatch"></i>other options</span>
+          <span class="ai-key"><i class="ai-swatch target"></i>movement target</span>
+        </div>
+        <div id="ai-content"></div>
+        <div id="ai-inspector" aria-live="polite">
+          <div><span id="ai-inspector-title">Indicator inspector</span>
+            <span id="ai-inspector-value"></span></div>
+          <div id="ai-inspector-meaning">Click any metric or pass card to see what it measures.</div>
+          <div id="ai-inspector-formula"></div>
+          <div id="ai-inspector-read"></div>
+        </div>
       </div>
     </div>
     <aside>
@@ -138,6 +229,40 @@
       <button id="pitchctrl">▦ Pitch control</button>
       <button id="formation">◇ Formation detect</button>
 
+      <h2>Experimental AI</h2>
+      <div class="demo-grid">
+        <button id="demo-decision">Demo 1: freeze + rank passes</button>
+        <button id="demo-shape">Demo 2: live team shape</button>
+        <button id="demo-movement">Demo 3: movement targets</button>
+      </div>
+      <div class="experiment-card">
+        <button id="ai-passes" class="experiment-toggle">
+          <span class="experiment-copy"><b>Pass options</b><small>Rank the next action</small></span>
+          <span id="ai-passes-state" class="switch-state">OFF</span>
+        </button>
+        <div class="detail">Faint arrows are every teammate; yellow, green, and purple are the top three.</div>
+      </div>
+      <div class="experiment-card">
+        <button id="ai-indicators" class="experiment-toggle">
+          <span class="experiment-copy"><b>Indicator inspector</b><small>Explain every live metric</small></span>
+          <span id="ai-indicators-state" class="switch-state">OFF</span>
+        </button>
+        <div class="detail">Opens the pitch HUD. Click any value to inspect its meaning and calculation.</div>
+      </div>
+      <div class="experiment-card">
+        <button id="ai-targets" class="experiment-toggle">
+          <span class="experiment-copy"><b>Receiver movement</b><small>Search better nearby positions</small></span>
+          <span id="ai-targets-state" class="switch-state">OFF</span>
+        </button>
+        <div class="detail">Cyan dotted lines show reachable off-ball moves and estimated EV improvement.</div>
+      </div>
+      <div class="lab-actions">
+        <button id="ai-freeze">Freeze frame</button>
+        <button id="ai-clear">Clear analysis</button>
+      </div>
+      <div class="sub experimental-note">Independent switches, default off. Explainable heuristic
+        estimates only; no trained model is being claimed.</div>
+
       <h2>Match events</h2>
       <div id="events"><div class="sub">waiting for kickoff…</div></div>
 
@@ -154,7 +279,14 @@
         <tr><td>tracking frame</td><td id="d-frame">—</td></tr>
         <tr><td>media time</td><td id="d-time">—</td></tr>
         <tr><td>renderer fps</td><td id="d-fps">—</td></tr>
+        <tr><td>renderer quality</td><td id="d-render">—</td></tr>
+        <tr><td>camera capture</td><td id="d-capturefps">—</td></tr>
         <tr><td>vision fps</td><td id="d-vfps">—</td></tr>
+        <tr><td>inference</td><td id="d-inference">—</td></tr>
+        <tr><td>capture → server</td><td id="d-pipeline">—</td></tr>
+        <tr><td>capture → browser</td><td id="d-browserpipe">—</td></tr>
+        <tr><td>server → browser</td><td id="d-network">—</td></tr>
+        <tr><td>stale frames skipped</td><td id="d-drops">0</td></tr>
         <tr><td>hands seen</td><td id="d-hands">—</td></tr>
         <tr><td>hand size</td><td id="d-handpx">—</td></tr>
         <tr><td>calibration</td><td id="d-calib">—</td></tr>
@@ -294,6 +426,35 @@
     $("shadows").onclick = () => conn.send("TOGGLE_SHADOWS");
     $("pitchctrl").onclick = () => conn.send("TOGGLE_PITCH_CONTROL");
     $("formation").onclick = () => conn.send("TOGGLE_FORMATION");
+    const toggleExperiment = (name) => conn.send("SET_EXPERIMENT", {
+      name,
+      enabled: !state?.experiments?.[name],
+    });
+    const setExperimentSet = (settings, playing = null) => {
+      for (const [name, enabled] of Object.entries(settings)) {
+        conn.send("SET_EXPERIMENT", { name, enabled });
+      }
+      if (playing !== null) conn.send("SET_PLAYING", { playing });
+    };
+    $("ai-passes").onclick = () => toggleExperiment("passRecommendations");
+    $("ai-indicators").onclick = () => toggleExperiment("technicalIndicators");
+    $("ai-targets").onclick = () => toggleExperiment("receiverTargets");
+    $("demo-decision").onclick = () => setExperimentSet({
+      passRecommendations: true, technicalIndicators: true, receiverTargets: false,
+    }, false);
+    $("demo-shape").onclick = () => setExperimentSet({
+      passRecommendations: false, technicalIndicators: true, receiverTargets: false,
+    }, true);
+    $("demo-movement").onclick = () => setExperimentSet({
+      passRecommendations: true, technicalIndicators: true, receiverTargets: true,
+    }, false);
+    $("ai-freeze").onclick = () => {
+      conn.send("SET_EXPERIMENT", { name: "technicalIndicators", enabled: true });
+      conn.send("SET_PLAYING", { playing: false });
+    };
+    $("ai-clear").onclick = () => setExperimentSet({
+      passRecommendations: false, technicalIndicators: false, receiverTargets: false,
+    });
 
     // Cycle the reach horizon. 2s is the useful default; 1s shows who is
     // *actually* marking right now, 3s shows how much the shape can recover.
@@ -365,6 +526,7 @@
       $("d-rtt").className = conn.rtt < 30 ? "ok" : conn.rtt < 100 ? "warnc" : "bad";
       $("d-recon").textContent = conn.reconnects;
       $("d-fps").textContent = renderer.fps.toFixed(0);
+      $("d-render").textContent = `${renderer.quality} / ${renderer.renderResolution.toFixed(2)}x`;
       if (!state) return;
 
       renderMatches();
@@ -372,8 +534,23 @@
       $("d-rev").textContent = state.revision;
       $("d-frame").textContent = state.frameIndex;
       $("d-time").textContent = `${(state.mediaTimeMs / 1000).toFixed(1)} s`;
+      const captureFps = state.vision.captureFps || 0;
+      $("d-capturefps").textContent = captureFps ? `${captureFps.toFixed(1)} fps` : "—";
+      $("d-capturefps").className = captureFps >= 50 ? "ok" : captureFps >= 25 ? "warnc" : "bad";
       $("d-vfps").textContent = state.vision.fps.toFixed(1);
       $("d-vfps").className = state.vision.fps > 20 ? "ok" : state.vision.fps > 10 ? "warnc" : "bad";
+      const inferenceMs = state.vision.inferenceMs || 0;
+      $("d-inference").textContent = inferenceMs ? `${inferenceMs.toFixed(1)} ms` : "—";
+      $("d-inference").className = inferenceMs < 20 ? "ok" : inferenceMs < 35 ? "warnc" : "bad";
+      const pipelineMs = state.vision.captureToServerMs || 0;
+      $("d-pipeline").textContent = pipelineMs ? `${pipelineMs.toFixed(1)} ms` : "—";
+      $("d-pipeline").className = pipelineMs < 40 ? "ok" : pipelineMs < 75 ? "warnc" : "bad";
+      const browserMs = conn.captureToBrowserMs || 0;
+      $("d-browserpipe").textContent = browserMs ? `${browserMs.toFixed(1)} ms` : "—";
+      $("d-browserpipe").className = browserMs < 50 ? "ok" : browserMs < 90 ? "warnc" : "bad";
+      $("d-network").textContent = `${conn.serverToBrowserMs.toFixed(1)} ms`;
+      $("d-network").className = conn.serverToBrowserMs < 10 ? "ok" : conn.serverToBrowserMs < 30 ? "warnc" : "bad";
+      $("d-drops").textContent = state.vision.captureDrops || 0;
       $("d-hands").textContent = state.vision.hands;
       const hp = state.vision.handPx || 0;
       $("d-handpx").textContent = hp ? `${hp} px / 224` : "—";
@@ -391,6 +568,16 @@
       $("shadows").className = state.shadowOverlay ? "primary" : "";
       $("pitchctrl").className = state.pitchControlOverlay ? "primary" : "";
       $("formation").className = state.formationOverlay ? "primary" : "";
+      const setExperimentButton = (id, enabled) => {
+        $(id).classList.toggle("primary", !!enabled);
+        $(`${id}-state`).textContent = enabled ? "ON" : "OFF";
+      };
+      setExperimentButton("ai-passes", state.experiments?.passRecommendations);
+      setExperimentButton("ai-indicators", state.experiments?.technicalIndicators);
+      setExperimentButton("ai-targets", state.experiments?.receiverTargets);
+      $("ai-freeze").textContent = state.playing ? "Freeze frame" : "Frame frozen";
+      $("ai-freeze").classList.toggle("primary", !state.playing);
+      updateExperimentalAnalysis();
       $("shadowsec").textContent = `⏱ Reach horizon · ${state.shadowSeconds.toFixed(1)}s`;
       $("d-poss").textContent = `${state.possession} (${state.shadows.length} shadows)`;
     }, 200);
@@ -434,6 +621,315 @@
       $("cm-abm").textContent = fmt(a?.backMid);
       $("cm-amf").textContent = fmt(a?.midFwd);
       $("cm-aw").textContent  = fmt(a?.width);
+    }
+
+    const INDICATOR_HELP = {
+      possession: {
+        title: "Possession and ball carrier",
+        meaning: "The team credited with the ball and the nearest player on that team.",
+        formula: "Nearest team to ball, with a 1.5 m hysteresis margin to prevent rapid switching.",
+        read: "The shirt number is the player used as the origin for candidate passes.",
+      },
+      phase: {
+        title: "Attack phase and channel",
+        meaning: "Where the ball sits after normalizing the possessing team to attack left-to-right.",
+        formula: "Pitch length thirds: build-up, progression, final third. Width thirds: left, central, right.",
+        read: "Use this to add context to every other indicator; identical values mean different things by phase.",
+      },
+      attackDirection: {
+        title: "Attacking direction",
+        meaning: "The goal direction used to define forward progress, line height, xT, and offside.",
+        formula: "The team with the leftmost centroid attacks right; the other team attacks left.",
+        read: "Coordinates are normalized internally, so higher field values always mean closer to the opponent goal.",
+      },
+      pitchControlAtBall: {
+        title: "Pitch control at the ball",
+        meaning: "Estimated probability that the possessing team reaches and controls the ball location first.",
+        formula: "Logistic transform of the fastest attacker arrival time minus fastest defender arrival time.",
+        read: "Above 70% suggests secure control; near 50% is contested; below 40% warns of a likely turnover.",
+      },
+      carrierPressure: {
+        title: "Ball-carrier space",
+        meaning: "Distance from the inferred ball carrier to the nearest opponent.",
+        formula: "Minimum Euclidean player-to-opponent distance, in metres.",
+        read: "Lower is more pressure. Under 3 m usually means the carrier must act quickly.",
+      },
+      pressureIndex: {
+        title: "Pressure index",
+        meaning: "A 0-100 urgency score derived from the nearest defender distance.",
+        formula: "100 * exp(-carrier space / 4.5).",
+        read: "Higher means more immediate pressure: 50+ is meaningful and 70+ is intense.",
+      },
+      viablePasses: {
+        title: "Viable passes",
+        meaning: "Teammates whose estimated completion probability is at least 55% and who are onside.",
+        formula: "Count(P(success) >= 0.55 and offside = false).",
+        read: "A low count indicates isolation; a high count indicates several retention options.",
+      },
+      progressivePasses: {
+        title: "Progressive passes",
+        meaning: "Viable passes that advance the ball at least eight metres toward goal.",
+        formula: "Count(viable and attack-normalized x gain >= 8 m).",
+        read: "Compare with viable passes to see whether options advance play or merely retain possession.",
+      },
+      tempo: {
+        title: "Match movement tempo",
+        meaning: "Average instantaneous speed across every tracked player.",
+        formula: "Mean(sqrt(vx^2 + vy^2)), in metres per second.",
+        read: "Higher values indicate a more dynamic frame; use transition index for an easier 0-100 view.",
+      },
+      transition: {
+        title: "Transition index",
+        meaning: "A simple 0-100 estimate of how much collective movement is occurring right now.",
+        formula: "Clamp((average player speed - 0.8) * 30, 0, 100).",
+        read: "High values suggest a transition or counterattack; low values suggest a settled phase.",
+      },
+      bestOverload: {
+        title: "Best channel overload",
+        meaning: "The width channel where the possessing team has its largest player-count advantage.",
+        formula: "For each pitch-width third: attackers minus defenders; select the maximum.",
+        read: "A channel name identifies where an extra player may create the clearest progression route.",
+      },
+      overloads: {
+        title: "Channel overload counts",
+        meaning: "Player-count advantage in left, central, and right width channels.",
+        formula: "L/C/R = possessing players minus opponents in each width third.",
+        read: "Positive is an attacking overload; negative is a defensive overload. Example: c:+2.",
+      },
+      fieldTilt: {
+        title: "Field tilt",
+        meaning: "Average forward field position of a team's outfield players.",
+        formula: "Mean attack-normalized x / pitch length * 100.",
+        read: "Higher means the team is positioned farther upfield; it is positional, not possession share.",
+      },
+      lineHeight: {
+        title: "Defensive line height",
+        meaning: "How far the back line is positioned from its own goal.",
+        formula: "Mean depth of the four deepest outfield players after removing the goalkeeper.",
+        read: "Higher indicates a more aggressive high line; lower indicates a deeper block.",
+      },
+      attackLine: {
+        title: "Attacking-line height",
+        meaning: "Average depth of the team's three most advanced outfield players.",
+        formula: "Mean of the top three attack-normalized x positions.",
+        read: "Higher means attackers are pinning play closer to the opponent goal.",
+      },
+      width: {
+        title: "Team width",
+        meaning: "Touchline-to-touchline spread occupied by the outfield team.",
+        formula: "Maximum y minus minimum y, excluding the goalkeeper.",
+        read: "More width stretches opponents; too much width can reduce short support connections.",
+      },
+      depth: {
+        title: "Team depth",
+        meaning: "Distance between the deepest and most advanced outfield players.",
+        formula: "Maximum attack depth minus minimum attack depth.",
+        read: "Low depth is compact vertically; high depth provides stretch but may open gaps.",
+      },
+      hullArea: {
+        title: "Occupied hull area",
+        meaning: "Pitch area enclosed by the outermost outfield-player positions.",
+        formula: "Area of the two-dimensional convex hull, in square metres.",
+        read: "Larger means a more spread shape; compare it with width and depth to understand why.",
+      },
+      avgSpeed: {
+        title: "Team average speed",
+        meaning: "Average instantaneous speed for all players on one team.",
+        formula: "Mean(sqrt(vx^2 + vy^2)), in metres per second.",
+        read: "Useful for comparing work rate between teams in the current frame, not total distance covered.",
+      },
+      highIntensity: {
+        title: "High-intensity runs",
+        meaning: "Players currently moving at least 3.5 metres per second.",
+        formula: "Count(player speed >= 3.5 m/s).",
+        read: "A simultaneous spike often accompanies a press, transition, or coordinated run.",
+      },
+      sprints: {
+        title: "Sprints",
+        meaning: "Players currently moving at least 5.5 metres per second.",
+        formula: "Count(player speed >= 5.5 m/s).",
+        read: "This is an instantaneous tracking threshold, not an accumulated sprint count.",
+      },
+      ballPressure: {
+        title: "Team ball pressure",
+        meaning: "Distance from the ball to the nearest player on this team.",
+        formula: "Minimum team-player distance to ball, in metres.",
+        read: "For the defending team, lower means a more immediate press. For possession, it validates the carrier.",
+      },
+      opponentSpace: {
+        title: "Average opponent space",
+        meaning: "How far each player is, on average, from their nearest opponent.",
+        formula: "Mean over players of minimum opponent distance.",
+        read: "Higher means more separation and time; lower indicates tighter marking across the team.",
+      },
+      avgXT: {
+        title: "Average expected threat",
+        meaning: "Average location value of the team's outfield positions relative to the opponent goal.",
+        formula: "Mean of the experimental smooth xT prior over outfield player locations.",
+        read: "Higher means players occupy more dangerous zones. This is a heuristic prior, not trained xT.",
+      },
+      shapeScore: {
+        title: "Shape score",
+        meaning: "A simple reference score for balanced team width and depth.",
+        formula: "100 - 1.15*abs(width-44) - 0.8*abs(depth-42), clamped to 0-100.",
+        read: "Use for demos and relative changes only; it does not define an objectively ideal formation.",
+      },
+    };
+
+    const aiPanel = $("ai-panel");
+    const aiContent = $("ai-content");
+    let aiRenderKey = "";
+    let selectedIndicatorKey = "pitchControlAtBall";
+    let selectedIndicatorScope = "";
+    const aiValue = (v, suffix = "") => v == null ? "-" : `${v}${suffix}`;
+
+    function showIndicator(key, output, scope = "") {
+      const help = INDICATOR_HELP[key];
+      if (!help) return;
+      selectedIndicatorKey = key;
+      selectedIndicatorScope = scope;
+      $("ai-inspector-title").textContent = scope ? `${scope}: ${help.title}` : help.title;
+      $("ai-inspector-value").textContent = output;
+      $("ai-inspector-meaning").textContent = help.meaning;
+      $("ai-inspector-formula").textContent = `Calculation: ${help.formula}`;
+      $("ai-inspector-read").textContent = `How to read it: ${help.read}`;
+    }
+
+    function explainable(element, callback) {
+      element.tabIndex = 0;
+      element.setAttribute("role", "button");
+      element.onclick = callback;
+      element.onkeydown = (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault(); callback();
+        }
+      };
+    }
+
+    function aiStat(label, output, key = "", scope = "") {
+      const row = document.createElement("div");
+      row.className = "ai-stat";
+      const lab = document.createElement("span"); lab.textContent = label;
+      const val = document.createElement("span"); val.textContent = output;
+      row.append(lab, val);
+      if (key && INDICATOR_HELP[key]) {
+        row.classList.add("explainable");
+        if (selectedIndicatorKey === key && selectedIndicatorScope === scope) {
+          row.classList.add("selected");
+          showIndicator(key, output, scope);
+        }
+        explainable(row, () => {
+          aiContent.querySelectorAll(".selected").forEach((el) => el.classList.remove("selected"));
+          row.classList.add("selected");
+          showIndicator(key, output, scope);
+        });
+      }
+      return row;
+    }
+
+    function showPassDetails(pass) {
+      selectedIndicatorKey = `pass-${pass.receiverId}`;
+      selectedIndicatorScope = "";
+      const f = pass.features || {};
+      $("ai-inspector-title").textContent = `Pass #${pass.rank} to #${pass.receiverNumber}`;
+      $("ai-inspector-value").textContent = `P ${Math.round(pass.completionProbability * 100)}% / EV ${pass.score}`;
+      $("ai-inspector-meaning").textContent = (pass.explanation || []).join("; ");
+      $("ai-inspector-formula").textContent = "Calculation: P(success) * action reward - P(failure) * turnover cost.";
+      $("ai-inspector-read").textContent = `Inputs: ${f.distanceM} m pass, ${f.forwardProgressM} m forward, ${f.receiverSpaceM} m receiver space, ${f.laneDefenders} blocker(s), ${f.laneClearanceM} m lane clearance, ${(f.destinationControl * 100).toFixed(0)}% destination control, ${f.defendersBypassed} bypassed, xT ${f.xTGain >= 0 ? "+" : ""}${f.xTGain}${f.offside ? ", OFFSIDE" : ""}.`;
+    }
+
+    function aiHeading(text) {
+      const el = document.createElement("h4");
+      el.textContent = text;
+      return el;
+    }
+
+    function updateExperimentalAnalysis() {
+      const enabled = !!state?.experiments?.technicalIndicators;
+      aiPanel.classList.toggle("on", enabled);
+      if (!enabled) return;
+      const analysis = state.experimentalAnalysis;
+      if (!analysis?.context) return;
+      const key = `${state.frameIndex}:${state.revision}`;
+      if (key === aiRenderKey) return;
+      aiRenderKey = key;
+
+      $("ai-model").textContent = `${state.playing ? "LIVE" : "FROZEN"} / ${analysis.model?.name || "baseline"} / click any ? metric`;
+      const c = analysis.context;
+      const fragment = document.createDocumentFragment();
+      fragment.append(aiHeading("Live context"));
+      const contextGrid = document.createElement("div");
+      contextGrid.className = "ai-grid";
+      [
+        ["possession", `${c.possession} #${c.ballCarrierNumber}`, "possession"],
+        ["phase", `${c.phase} / ${c.channel}`, "phase"],
+        ["attack", c.attackingDirection, "attackDirection"],
+        ["control @ ball", `${((c.pitchControlAtBall || 0) * 100).toFixed(0)}%`, "pitchControlAtBall"],
+        ["carrier space", aiValue(c.carrierPressureM, " m"), "carrierPressure"],
+        ["pressure index", aiValue(c.pressureIndex, "/100"), "pressureIndex"],
+        ["viable passes", aiValue(c.viablePasses), "viablePasses"],
+        ["progressive", aiValue(c.progressivePasses), "progressivePasses"],
+        ["match tempo", aiValue(c.tempoMps, " m/s"), "tempo"],
+        ["transition", aiValue(c.transitionIndex, "/100"), "transition"],
+        ["best overload", c.bestChannel, "bestOverload"],
+        ["overloads", (c.channelOverloads || []).map((lane) => `${lane.channel[0]}:${lane.overload >= 0 ? "+" : ""}${lane.overload}`).join(" "), "overloads"],
+      ].forEach(([label, output, key]) => contextGrid.append(aiStat(label, output, key)));
+      fragment.append(contextGrid);
+
+      fragment.append(aiHeading("Team technical indicators"));
+      const teams = analysis.teams || {};
+      const teamGrid = document.createElement("div");
+      teamGrid.className = "ai-grid";
+      for (const name of ["home", "away"]) {
+        const column = document.createElement("div");
+        const head = document.createElement("div");
+        head.className = `ai-team-head ${name}`; head.textContent = name;
+        column.append(head);
+        const t = teams[name] || {};
+        [
+          ["field tilt", aiValue(t.fieldTiltPct, "%"), "fieldTilt"],
+          ["line height", aiValue(t.lineHeightM, " m"), "lineHeight"],
+          ["attack line", aiValue(t.attackingLineM, " m"), "attackLine"],
+          ["width", aiValue(t.teamWidthM, " m"), "width"],
+          ["depth", aiValue(t.teamDepthM, " m"), "depth"],
+          ["hull area", aiValue(t.occupiedAreaM2, " m2"), "hullArea"],
+          ["avg speed", aiValue(t.avgSpeedMps, " m/s"), "avgSpeed"],
+          ["high intensity", aiValue(t.highIntensityRuns), "highIntensity"],
+          ["sprints", aiValue(t.sprints), "sprints"],
+          ["ball pressure", aiValue(t.ballPressureM, " m"), "ballPressure"],
+          ["opp. space", aiValue(t.avgOpponentSpaceM, " m"), "opponentSpace"],
+          ["average xT", aiValue(t.avgXT), "avgXT"],
+          ["shape score", aiValue(t.shapeScore, "/100"), "shapeScore"],
+        ].forEach(([label, output, key]) => column.append(aiStat(label, output, key, name)));
+        teamGrid.append(column);
+      }
+      fragment.append(teamGrid);
+
+      fragment.append(aiHeading("Ranked next actions"));
+      for (const pass of (analysis.passes || []).slice(0, 3)) {
+        const card = document.createElement("div"); card.className = `ai-rec r${pass.rank}`;
+        if (selectedIndicatorKey === `pass-${pass.receiverId}`) {
+          card.classList.add("selected");
+          showPassDetails(pass);
+        }
+        const title = document.createElement("div"); title.className = "ai-rec-title";
+        const receiver = document.createElement("span"); receiver.textContent = `#${pass.rank} Pass to #${pass.receiverNumber}`;
+        const score = document.createElement("span"); score.textContent = `${(pass.completionProbability * 100).toFixed(0)}%`;
+        title.append(receiver, score);
+        const f = pass.features || {};
+        const meta = document.createElement("div"); meta.className = "ai-rec-meta";
+        meta.textContent = `EV ${pass.score >= 0 ? "+" : ""}${pass.score} | xT ${f.xTGain >= 0 ? "+" : ""}${f.xTGain} | progress ${f.forwardProgressM}m | blockers ${f.laneDefenders}`;
+        const why = document.createElement("div"); why.className = "ai-rec-why";
+        why.textContent = (pass.explanation || []).join("; ");
+        card.append(title, meta, why);
+        explainable(card, () => {
+          aiContent.querySelectorAll(".selected").forEach((el) => el.classList.remove("selected"));
+          card.classList.add("selected");
+          showPassDetails(pass);
+        });
+        fragment.append(card);
+      }
+      aiContent.replaceChildren(fragment);
     }
   </script>
 </body>
