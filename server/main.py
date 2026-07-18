@@ -45,6 +45,16 @@ def snapshot_message() -> dict:
     )
 
 
+def vision_message() -> dict:
+    return server_message(
+        "VISION_UPDATE",
+        state.vision_snapshot(),
+        state.scenario_id,
+        state.next_sequence(),
+        now_ms(),
+    )
+
+
 async def tick_loop() -> None:
     dt = 1.0 / TICK_HZ
     n = 0
@@ -62,9 +72,10 @@ async def tick_loop() -> None:
 async def vision_loop() -> None:
     while True:
         if vision_queue is None:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.02)
             continue
         drained = 0
+        changed = False
         while drained < 64:
             try:
                 evt = vision_queue.get_nowait()
@@ -73,8 +84,13 @@ async def vision_loop() -> None:
             except Exception:
                 break
             state.handle_vision_event(evt)
+            changed = True
             drained += 1
-        await asyncio.sleep(0.004)
+        if changed and clients:
+            # Vision controls are latency-sensitive; don't wait for the next
+            # scheduled match snapshot. One broadcast covers this drained batch.
+            await broadcast(vision_message())
+        await asyncio.sleep(0.001)
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -84,12 +100,15 @@ async def lifespan(app: FastAPI):
         print("[server] TC_NO_VISION=1 -- vision worker disabled (mouse input only)")
     else:
         camera = int(os.environ.get("TC_CAMERA", "1"))
+        show_preview = os.environ.get("TC_VISION_PREVIEW", "0") == "1"
         ctx = multiprocessing.get_context("spawn")
-        vision_queue = ctx.Queue(maxsize=256)
+        vision_queue = ctx.Queue(maxsize=32)
         from vision.worker import run as vision_run
 
         vision_proc = ctx.Process(
-            target=vision_run, args=(vision_queue, camera, True), daemon=True
+            target=vision_run,
+            args=(vision_queue, camera, show_preview),
+            daemon=True,
         )
         vision_proc.start()
         print(f"[server] vision worker started (pid {vision_proc.pid}, camera {camera})")

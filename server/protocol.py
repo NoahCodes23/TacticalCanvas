@@ -20,7 +20,7 @@ CommandType = Literal[
     "PING",                     # {t}  -- client clock, echoed back for RTT
 ]
 
-ServerMessageType = Literal["STATE_SNAPSHOT", "ERROR", "PONG"]
+ServerMessageType = Literal["STATE_SNAPSHOT", "VISION_UPDATE", "ERROR", "PONG"]
 
 class Envelope(BaseModel):
     protocolVersion: int = PROTOCOL_VERSION

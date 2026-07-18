@@ -50,7 +50,17 @@ class AppState:
         self.grabbed: dict[str, str] = {}
         self.cursors: dict[str, dict] = {}
 
-        self.vision_stats = {"fps": 0.0, "hands": 0, "calibrated": False, "handPx": 0}
+        self.vision_stats = {
+            "fps": 0.0,
+            "captureFps": 0.0,
+            "hands": 0,
+            "calibrated": False,
+            "handPx": 0,
+            "inferenceMs": 0.0,
+            "captureToInferenceMs": 0.0,
+            "captureToServerMs": 0.0,
+            "captureDrops": 0,
+        }
 
     def _bump(self) -> None:
         self.revision += 1
@@ -272,11 +282,24 @@ class AppState:
         etype = evt.get("type")
 
         if etype == "vision_stats":
+            received_at_ms = now_ms()
+            captured_at_ms = evt.get("capturedAtMs", received_at_ms)
             self.vision_stats = {
                 "fps": evt.get("fps", 0.0),
+                "captureFps": evt.get("captureFps", 0.0),
                 "hands": evt.get("hands", 0),
                 "calibrated": evt.get("calibrated", False),
                 "handPx": evt.get("handPx", 0),
+                "inferenceMs": evt.get("inferenceMs", 0.0),
+                "captureToInferenceMs": evt.get("captureToInferenceMs", 0.0),
+                "captureToServerMs": round(
+                    max(0.0, received_at_ms - captured_at_ms), 1
+                ),
+                "captureDrops": evt.get("captureDrops", 0),
+                "cameraFps": evt.get("cameraFps", 0.0),
+                "submittedFrames": evt.get("submittedFrames", 0),
+                "completedFrames": evt.get("completedFrames", 0),
+                "capturedAtMs": captured_at_ms,
             }
             return
 
@@ -288,13 +311,20 @@ class AppState:
 
         hand = evt.get("handId", "?")
         bx, by = evt.get("boardX", 0.0), evt.get("boardY", 0.0)
+        received_at_ms = now_ms()
+        captured_at_ms = evt.get("capturedAtMs", received_at_ms)
+        capture_to_server_ms = max(0.0, received_at_ms - captured_at_ms)
+        self.vision_stats["captureToServerMs"] = round(capture_to_server_ms, 1)
 
         self.cursors[hand] = {
             "boardX": bx,
             "boardY": by,
             "grabbing": etype in ("grab_start", "grab_move"),
             "confidence": evt.get("confidence", 0.0),
-            "lastSeenMs": now_ms(),
+            "lastSeenMs": received_at_ms,
+            "capturedAtMs": captured_at_ms,
+            "inferenceMs": evt.get("inferenceMs", 0.0),
+            "captureToServerMs": capture_to_server_ms,
         }
 
         if etype in ("grab_start", "grab_move"):
@@ -315,6 +345,51 @@ class AppState:
         for hand in [h for h, c in self.cursors.items() if c["lastSeenMs"] < cutoff]:
             self.cursors.pop(hand, None)
             self.drag_end(hand)
+
+    def _players_snapshot(self) -> list[dict]:
+        return [
+            {
+                "id": player.id,
+                "team": player.team,
+                "number": player.number,
+                "x": round(player.x, 2),
+                "y": round(player.y, 2),
+                "vx": round(player.vx, 2),
+                "vy": round(player.vy, 2),
+                "edited": player.edited,
+                "grabbed": player.id in self.grabbed.values(),
+            }
+            for player in self.players
+        ]
+
+    def _cursors_snapshot(self) -> list[dict]:
+        return [
+            {
+                "handId": hand,
+                "boardX": round(cursor["boardX"], 4),
+                "boardY": round(cursor["boardY"], 4),
+                "grabbing": cursor["grabbing"],
+                "confidence": round(cursor["confidence"], 2),
+                "capturedAtMs": round(cursor.get("capturedAtMs", 0.0), 2),
+                "inferenceMs": round(cursor.get("inferenceMs", 0.0), 2),
+                "captureToServerMs": round(
+                    cursor.get("captureToServerMs", 0.0), 2
+                ),
+            }
+            for hand, cursor in self.cursors.items()
+        ]
+
+    def vision_snapshot(self) -> dict:
+        """Small state delta sent immediately for latency-sensitive hand input."""
+        return {
+            "revision": self.revision,
+            "playing": self.playing,
+            "editMode": self.edit_mode,
+            "players": self._players_snapshot(),
+            "cursors": self._cursors_snapshot(),
+            "vision": self.vision_stats,
+            "serverTimestampMs": now_ms(),
+        }
 
     def snapshot(self) -> dict:
         return {
@@ -340,30 +415,8 @@ class AppState:
             "events": match_data.recent_events(self.media_time_ms / 1000.0, 8),
             "serverTimestampMs": now_ms(),
             "pitch": {"length": PITCH_LENGTH, "width": PITCH_WIDTH},
-            "players": [
-                {
-                    "id": p.id,
-                    "team": p.team,
-                    "number": p.number,
-                    "x": round(p.x, 2),
-                    "y": round(p.y, 2),
-                    "vx": round(p.vx, 2),
-                    "vy": round(p.vy, 2),
-                    "edited": p.edited,
-                    "grabbed": p.id in self.grabbed.values(),
-                }
-                for p in self.players
-            ],
+            "players": self._players_snapshot(),
             "ball": {"x": round(self.ball[0], 2), "y": round(self.ball[1], 2)},
-            "cursors": [
-                {
-                    "handId": h,
-                    "boardX": round(c["boardX"], 4),
-                    "boardY": round(c["boardY"], 4),
-                    "grabbing": c["grabbing"],
-                    "confidence": round(c["confidence"], 2),
-                }
-                for h, c in self.cursors.items()
-            ],
+            "cursors": self._cursors_snapshot(),
             "vision": self.vision_stats,
         }

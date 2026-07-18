@@ -22,9 +22,10 @@ export class PitchRenderer {
     this.app = new PIXI.Application({
       resizeTo: el,
       backgroundColor: 0x000000,
-      antialias: true,
-      resolution: window.devicePixelRatio || 1,
+      antialias: false,
+      resolution: 1,
       autoDensity: true,
+      powerPreference: "high-performance",
     });
     el.appendChild(this.app.view);
 
@@ -42,8 +43,12 @@ export class PitchRenderer {
     this.ball = new PIXI.Graphics();
     this.playersLayer.addChild(this.ball);
     this.ballCur = { x: PITCH_L / 2, y: PITCH_W / 2 };
+    this.geometryVersion = 0;
+    this.overlayDirty = true;
 
     this._layout();
+    this._drawPitch();
+    this._drawBallGeometry();
     this.app.ticker.add(() => this._frame());
   }
 
@@ -54,6 +59,8 @@ export class PitchRenderer {
     let pw = w * 0.94, ph = pw / aspect;
     if (ph > h * 0.94) { ph = h * 0.94; pw = ph * aspect; }
     this.L = { w, h, pw, ph, ox: (w - pw) / 2, oy: (h - ph) / 2, scale: pw / PITCH_L };
+    this.geometryVersion++;
+    this.overlayDirty = true;
   }
 
   mx(m) { return this.L.ox + (m / PITCH_L) * this.L.pw; }
@@ -93,6 +100,7 @@ export class PitchRenderer {
   }
 
   _drawOverlay() {
+    this.overlayDirty = false;
     const g = this.overlayLayer;
     g.clear();
     if (this.showCalibration && this.state?.calibrationOverlay) this._drawCalibration(g);
@@ -257,9 +265,10 @@ export class PitchRenderer {
         Math.abs(this.app.renderer.height / this.app.renderer.resolution - this.L.h) > 1) {
       this._layout();
       this._drawPitch();
+      this._drawBallGeometry();
     }
     this.fps = this.app.ticker.FPS;
-    this._drawOverlay();
+    if (this.overlayDirty) this._drawOverlay();
     this._updatePitchControl();
     if (this.state) { this._frameplayers(); this._frameCursors(); }
     if (this._cornerLabels && !(this.showCalibration && this.state?.calibrationOverlay)) {
@@ -338,22 +347,22 @@ export class PitchRenderer {
       seen.add(p.id);
       let sp = this.sprites.get(p.id);
       if (!sp) sp = this._makePlayer(p);
-      const k = p.grabbed ? 0.55 : 0.22;
-      sp.cur.x += (p.x - sp.cur.x) * k;
-      sp.cur.y += (p.y - sp.cur.y) * k;
+      if (p.grabbed) {
+        // Hand coordinates were already filtered once in the vision worker.
+        sp.cur.x = p.x;
+        sp.cur.y = p.y;
+      } else {
+        sp.cur.x += (p.x - sp.cur.x) * 0.35;
+        sp.cur.y += (p.y - sp.cur.y) * 0.35;
+      }
 
-      const r = Math.max(8, this.L.scale * 1.15);
-      const g = sp.gfx;
-      g.clear();
-      if (p.grabbed) { g.lineStyle(4, 0xffffff, 1); }
-      else if (p.edited) { g.lineStyle(2.5, 0xffffff, 0.55); }
-      else { g.lineStyle(1.5, 0x000000, 0.35); }
-      g.beginFill(p.team === "home" ? COL_HOME : COL_AWAY, 1);
-      g.drawCircle(0, 0, p.grabbed ? r * 1.2 : r);
-      g.endFill();
-      g.position.set(this.mx(sp.cur.x), this.my(sp.cur.y));
-      sp.label.position.copyFrom(g.position);
-      sp.label.style.fontSize = Math.max(9, r * 0.95);
+      const styleKey = `${this.geometryVersion}:${p.team}:${p.grabbed}:${p.edited}`;
+      if (sp.styleKey !== styleKey) {
+        this._drawPlayerGeometry(sp, p);
+        sp.styleKey = styleKey;
+      }
+      sp.gfx.position.set(this.mx(sp.cur.x), this.my(sp.cur.y));
+      sp.label.position.copyFrom(sp.gfx.position);
     }
     for (const [id, sp] of this.sprites) {
       if (!seen.has(id)) { sp.gfx.destroy(); sp.label.destroy(); this.sprites.delete(id); }
@@ -362,10 +371,26 @@ export class PitchRenderer {
     const b = this.state.ball;
     this.ballCur.x += (b.x - this.ballCur.x) * 0.25;
     this.ballCur.y += (b.y - this.ballCur.y) * 0.25;
+    this.ball.position.set(this.mx(this.ballCur.x), this.my(this.ballCur.y));
+  }
+
+  _drawPlayerGeometry(sp, p) {
+    const r = Math.max(8, this.L.scale * 1.15);
+    const g = sp.gfx;
+    g.clear();
+    if (p.grabbed) { g.lineStyle(4, 0xffffff, 1); }
+    else if (p.edited) { g.lineStyle(2.5, 0xffffff, 0.55); }
+    else { g.lineStyle(1.5, 0x000000, 0.35); }
+    g.beginFill(p.team === "home" ? COL_HOME : COL_AWAY, 1);
+    g.drawCircle(0, 0, p.grabbed ? r * 1.2 : r);
+    g.endFill();
+    sp.label.style.fontSize = Math.max(9, r * 0.95);
+  }
+
+  _drawBallGeometry() {
     this.ball.clear();
     this.ball.beginFill(COL_BALL);
-    this.ball.drawCircle(this.mx(this.ballCur.x), this.my(this.ballCur.y),
-                         Math.max(4, this.L.scale * 0.5));
+    this.ball.drawCircle(0, 0, Math.max(4, this.L.scale * 0.5));
     this.ball.endFill();
   }
 
@@ -376,7 +401,7 @@ export class PitchRenderer {
     });
     label.anchor.set(0.5);
     this.playersLayer.addChild(gfx, label);
-    const sp = { gfx, label, cur: { x: p.x, y: p.y } };
+    const sp = { gfx, label, cur: { x: p.x, y: p.y }, styleKey: "" };
     this.sprites.set(p.id, sp);
     return sp;
   }
@@ -386,28 +411,49 @@ export class PitchRenderer {
     for (const c of this.state.cursors || []) {
       seen.add(c.handId);
       let g = this.cursorSprites.get(c.handId);
-      if (!g) { g = new PIXI.Graphics(); this.cursorsLayer.addChild(g); this.cursorSprites.set(c.handId, g); }
+      if (!g) {
+        g = new PIXI.Graphics();
+        g.styleKey = "";
+        this.cursorsLayer.addChild(g);
+        this.cursorSprites.set(c.handId, g);
+      }
       const x = this.bx(c.boardX), y = this.by(c.boardY);
       const r = Math.max(10, this.L.scale * 0.9);
-      g.clear();
-      if (c.grabbing) {
-        g.beginFill(0xffffff, 0.85);
-        g.drawCircle(x, y, r * 0.55);
-        g.endFill();
+      const styleKey = `${this.geometryVersion}:${c.grabbing}`;
+      if (g.styleKey !== styleKey) {
+        g.clear();
+        if (c.grabbing) {
+          g.beginFill(0xffffff, 0.85);
+          g.drawCircle(0, 0, r * 0.55);
+          g.endFill();
+        }
+        g.lineStyle(3, 0xffffff, c.grabbing ? 1 : 0.6);
+        g.drawCircle(0, 0, r);
+        g.moveTo(-r * 1.5, 0); g.lineTo(-r * 0.7, 0);
+        g.moveTo(r * 0.7, 0); g.lineTo(r * 1.5, 0);
+        g.moveTo(0, -r * 1.5); g.lineTo(0, -r * 0.7);
+        g.moveTo(0, r * 0.7); g.lineTo(0, r * 1.5);
+        g.styleKey = styleKey;
       }
-      g.lineStyle(3, 0xffffff, c.grabbing ? 1 : 0.6);
-      g.drawCircle(x, y, r);
-      g.moveTo(x - r * 1.5, y); g.lineTo(x - r * 0.7, y);
-      g.moveTo(x + r * 0.7, y); g.lineTo(x + r * 1.5, y);
-      g.moveTo(x, y - r * 1.5); g.lineTo(x, y - r * 0.7);
-      g.moveTo(x, y + r * 0.7); g.lineTo(x, y + r * 1.5);
+      g.position.set(x, y);
     }
     for (const [id, g] of this.cursorSprites) {
       if (!seen.has(id)) { g.destroy(); this.cursorSprites.delete(id); }
     }
   }
 
-  applyState(state) { this.state = state; }
+  applyState(state) {
+    const overlaysActive = state.calibrationOverlay || state.shadowOverlay
+      || state.offsideOverlay || state.formationOverlay;
+    if (overlaysActive
+        || this.state?.calibrationOverlay !== state.calibrationOverlay
+        || this.state?.shadowOverlay !== state.shadowOverlay
+        || this.state?.offsideOverlay !== state.offsideOverlay
+        || this.state?.formationOverlay !== state.formationOverlay) {
+      this.overlayDirty = true;
+    }
+    this.state = state;
+  }
 
   hitTest(boardX, boardY) {
     if (!this.state) return null;

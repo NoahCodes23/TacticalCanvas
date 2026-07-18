@@ -6,8 +6,11 @@ export class Connection {
     this.seq = 0;
     this.ws = null;
     this.rtt = 0;
+    this.serverToBrowserMs = 0;
+    this.captureToBrowserMs = 0;
     this.connected = false;
     this.reconnects = 0;
+    this.state = null;
     this.onState = () => {};
     this.onError = () => {};
     this._backoff = 250;
@@ -24,8 +27,23 @@ export class Connection {
     };
 
     this.ws.onmessage = (e) => {
+      const receivedAt = Date.now();
       const msg = JSON.parse(e.data);
-      if (msg.type === "STATE_SNAPSHOT") this.onState(msg.payload);
+      if (msg.type === "STATE_SNAPSHOT" || msg.type === "VISION_UPDATE") {
+        this.serverToBrowserMs = Math.max(0, receivedAt - msg.timestamp);
+        const newestCapture = Math.max(
+          msg.payload.vision?.capturedAtMs || 0,
+          0,
+          ...(msg.payload.cursors || []).map((cursor) => cursor.capturedAtMs || 0),
+        );
+        if (newestCapture) {
+          this.captureToBrowserMs = Math.max(0, receivedAt - newestCapture);
+        }
+        this.state = msg.type === "STATE_SNAPSHOT"
+          ? msg.payload
+          : { ...(this.state || {}), ...msg.payload };
+        this.onState(this.state);
+      }
       else if (msg.type === "PONG") this.rtt = performance.now() - msg.payload.t;
       else if (msg.type === "ERROR") this.onError(msg.payload.reason);
     };

@@ -117,7 +117,13 @@
         <tr><td>tracking frame</td><td id="d-frame">—</td></tr>
         <tr><td>media time</td><td id="d-time">—</td></tr>
         <tr><td>renderer fps</td><td id="d-fps">—</td></tr>
+        <tr><td>camera capture</td><td id="d-capturefps">—</td></tr>
         <tr><td>vision fps</td><td id="d-vfps">—</td></tr>
+        <tr><td>inference</td><td id="d-inference">—</td></tr>
+        <tr><td>capture → server</td><td id="d-pipeline">—</td></tr>
+        <tr><td>capture → browser</td><td id="d-browserpipe">—</td></tr>
+        <tr><td>server → browser</td><td id="d-network">—</td></tr>
+        <tr><td>stale frames skipped</td><td id="d-drops">0</td></tr>
         <tr><td>hands seen</td><td id="d-hands">—</td></tr>
         <tr><td>hand size</td><td id="d-handpx">—</td></tr>
         <tr><td>calibration</td><td id="d-calib">—</td></tr>
@@ -245,8 +251,23 @@
       $("d-rev").textContent = state.revision;
       $("d-frame").textContent = state.frameIndex;
       $("d-time").textContent = `${(state.mediaTimeMs / 1000).toFixed(1)} s`;
+      const captureFps = state.vision.captureFps || 0;
+      $("d-capturefps").textContent = captureFps ? `${captureFps.toFixed(1)} fps` : "—";
+      $("d-capturefps").className = captureFps >= 50 ? "ok" : captureFps >= 25 ? "warnc" : "bad";
       $("d-vfps").textContent = state.vision.fps.toFixed(1);
       $("d-vfps").className = state.vision.fps > 20 ? "ok" : state.vision.fps > 10 ? "warnc" : "bad";
+      const inferenceMs = state.vision.inferenceMs || 0;
+      $("d-inference").textContent = inferenceMs ? `${inferenceMs.toFixed(1)} ms` : "—";
+      $("d-inference").className = inferenceMs < 20 ? "ok" : inferenceMs < 35 ? "warnc" : "bad";
+      const pipelineMs = state.vision.captureToServerMs || 0;
+      $("d-pipeline").textContent = pipelineMs ? `${pipelineMs.toFixed(1)} ms` : "—";
+      $("d-pipeline").className = pipelineMs < 40 ? "ok" : pipelineMs < 75 ? "warnc" : "bad";
+      const browserMs = conn.captureToBrowserMs || 0;
+      $("d-browserpipe").textContent = browserMs ? `${browserMs.toFixed(1)} ms` : "—";
+      $("d-browserpipe").className = browserMs < 50 ? "ok" : browserMs < 90 ? "warnc" : "bad";
+      $("d-network").textContent = `${conn.serverToBrowserMs.toFixed(1)} ms`;
+      $("d-network").className = conn.serverToBrowserMs < 10 ? "ok" : conn.serverToBrowserMs < 30 ? "warnc" : "bad";
+      $("d-drops").textContent = state.vision.captureDrops || 0;
       $("d-hands").textContent = state.vision.hands;
       const hp = state.vision.handPx || 0;
       $("d-handpx").textContent = hp ? `${hp} px / 224` : "—";
