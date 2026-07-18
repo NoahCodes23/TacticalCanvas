@@ -3,9 +3,10 @@ from __future__ import annotations
 import math
 
 PINCH_CLOSE_RATIO = 0.38
-PINCH_RELEASE_RATIO = 0.52
+PINCH_RELEASE_RATIO = 0.58
 PINCH_GRAB_FRAMES = 2
 PINCH_RELEASE_FRAMES = 4
+INDEX_PINCH_MARGIN = 1.10
 SMOOTH_ALPHA = 0.70
 MAX_JUMP = 0.25
 JUMP_REJECT_LIMIT = 2
@@ -17,21 +18,59 @@ def _pixel(landmarks, index: int, width: int, height: int) -> tuple[float, float
     return landmark.x * width, landmark.y * height
 
 
+def _point3(landmarks, index: int) -> tuple[float, float, float]:
+    landmark = landmarks[index]
+    return float(landmark.x), float(landmark.y), float(landmark.z)
+
+
+def _pixel3(
+    landmarks, index: int, width: int, height: int
+) -> tuple[float, float, float]:
+    landmark = landmarks[index]
+    # MediaPipe's normalized z uses roughly the same scale as x.
+    return landmark.x * width, landmark.y * height, landmark.z * width
+
+
 def pinch_pointer(
-    landmarks, width: int, height: int
-) -> tuple[tuple[float, float], float]:
-    """Return the midpoint of both fingertips and a hand-scale pinch ratio."""
+    landmarks, width: int, height: int, world_landmarks=None
+) -> tuple[tuple[float, float], float, bool]:
+    """Return pointer, hand-scale pinch ratio, and index-pinch intent.
+
+    The pointer always comes from image landmarks so it stays registered with
+    the projected surface. Pinch intent prefers MediaPipe's metric 3D world
+    landmarks, which makes the threshold much less sensitive to hand depth,
+    camera angle, and lens perspective.
+    """
 
     thumb_tip = _pixel(landmarks, 4, width, height)
     index_tip = _pixel(landmarks, 8, width, height)
-    wrist = _pixel(landmarks, 0, width, height)
-    middle_mcp = _pixel(landmarks, 9, width, height)
-    palm_size = max(1.0, math.dist(wrist, middle_mcp))
     cursor = (
         (thumb_tip[0] + index_tip[0]) / 2.0,
         (thumb_tip[1] + index_tip[1]) / 2.0,
     )
-    return cursor, math.dist(thumb_tip, index_tip) / palm_size
+
+    metric_points = world_landmarks if world_landmarks else landmarks
+    point = _point3 if world_landmarks else (
+        lambda points, index: _pixel3(points, index, width, height)
+    )
+    thumb = point(metric_points, 4)
+    fingertips = [point(metric_points, index) for index in (8, 12, 16, 20)]
+    index_mcp = point(metric_points, 5)
+    pinky_mcp = point(metric_points, 17)
+    wrist = point(metric_points, 0)
+    middle_mcp = point(metric_points, 9)
+
+    # Using two palm axes avoids a tiny denominator when the palm is edge-on.
+    palm_size = max(
+        math.dist(index_mcp, pinky_mcp),
+        0.75 * math.dist(wrist, middle_mcp),
+        1e-6,
+    )
+    tip_distances = [math.dist(thumb, fingertip) for fingertip in fingertips]
+    index_distance = tip_distances[0]
+    nearest_other = min(tip_distances[1:])
+    index_is_primary = index_distance <= nearest_other * INDEX_PINCH_MARGIN
+    return cursor, index_distance / palm_size, index_is_primary
 
 
 class HandTracker:
@@ -46,7 +85,11 @@ class HandTracker:
         self.last_seen = 0.0
 
     def update(
-        self, board_pt: tuple[float, float], pinch_ratio: float, now: float
+        self,
+        board_pt: tuple[float, float],
+        pinch_ratio: float,
+        now: float,
+        index_is_primary: bool = True,
     ) -> str | None:
         stale = (now - self.last_seen) * 1000.0 > STALE_MS
         self.last_seen = now
@@ -72,7 +115,12 @@ class HandTracker:
 
         self.pinch_ratio = pinch_ratio
         wants = self.grabbing
-        if pinch_ratio <= PINCH_CLOSE_RATIO:
+        # Accidental thumb contact with another fingertip must not start a grab.
+        # Once grabbed, release is based only on opening the intended pinch so
+        # crossing another finger through the cursor cannot drop the piece.
+        if pinch_ratio <= PINCH_CLOSE_RATIO and (
+            self.grabbing or index_is_primary
+        ):
             wants = True
         elif pinch_ratio >= PINCH_RELEASE_RATIO:
             wants = False

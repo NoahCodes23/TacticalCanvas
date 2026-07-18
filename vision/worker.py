@@ -523,15 +523,21 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                 hand_px = 0.8 * hand_px + 0.2 * biggest if hand_px else biggest
 
             if result.hand_landmarks and calib.ready and not calibration_active:
-                for landmarks, handedness in zip(
-                    result.hand_landmarks, result.handedness, strict=False
+                for landmarks, world_landmarks, handedness in zip(
+                    result.hand_landmarks,
+                    result.hand_world_landmarks
+                    or [None] * len(result.hand_landmarks),
+                    result.handedness,
+                    strict=False,
                 ):
                     hand_id = handedness[0].category_name
                     if hand_id in seen:
                         continue     
                     seen.add(hand_id)
 
-                    pointer, pinch_ratio = pinch_pointer(landmarks, w, h)
+                    pointer, pinch_ratio, index_is_primary = pinch_pointer(
+                        landmarks, w, h, world_landmarks
+                    )
                     bx, by = calib.to_board(*pointer, frame_size=(w, h))
 
                     if not (math.isfinite(bx) and math.isfinite(by)):
@@ -541,7 +547,12 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
 
                     tracker = trackers.setdefault(hand_id, HandTracker(hand_id))
                     tracker.missing = 0
-                    etype = tracker.update((bx, by), pinch_ratio, completed_perf)
+                    etype = tracker.update(
+                        (bx, by),
+                        pinch_ratio,
+                        completed_perf,
+                        index_is_primary=index_is_primary,
+                    )
                     if etype and tracker.board:
                         emit({
                             "type": etype,
