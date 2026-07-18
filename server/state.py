@@ -2,6 +2,7 @@ import math
 import time
 
 from . import match_data
+from .analytics.experimental import analyze as analyze_experimental
 from .analytics.formation import detect_formation
 from .analytics.reach import reach_polygon
 from .match_data import PITCH_LENGTH, PITCH_WIDTH, Player
@@ -15,6 +16,12 @@ POSSESSION_MARGIN_M = 1.5
 
 SHADOW_SECONDS_MIN = 0.5
 SHADOW_SECONDS_MAX = 4.0
+
+EXPERIMENT_DEFAULTS = {
+    "passRecommendations": False,
+    "technicalIndicators": False,
+    "receiverTargets": False,
+}
 
 
 def now_ms() -> float:
@@ -39,6 +46,7 @@ class AppState:
         self.shadow_overlay = False
         self.pitch_control_overlay = False
         self.formation_overlay = False
+        self.experiments = dict(EXPERIMENT_DEFAULTS)
         self.shadow_seconds = 2.0
         self.possession = "home"
 
@@ -49,6 +57,8 @@ class AppState:
 
         self.grabbed: dict[str, str] = {}
         self.cursors: dict[str, dict] = {}
+        self._experimental_cache_key: tuple | None = None
+        self._experimental_cache: dict | None = None
 
         self.vision_stats = {
             "fps": 0.0,
@@ -167,6 +177,9 @@ class AppState:
         self.shadow_overlay = False
         self.pitch_control_overlay = False
         self.formation_overlay = False
+        self.experiments = dict(EXPERIMENT_DEFAULTS)
+        self._experimental_cache_key = None
+        self._experimental_cache = None
         self.playing = True
         self.media_time_ms = 0.0
         self.frame_index = 0
@@ -197,6 +210,45 @@ class AppState:
     def toggle_formation(self) -> None:
         self.formation_overlay = not self.formation_overlay
         self._bump()
+
+    def set_experiment(self, name: str, enabled: bool | None = None) -> bool:
+        """Enable/toggle one allow-listed experiment; return False if unknown."""
+        if name not in self.experiments:
+            return False
+        current = self.experiments[name]
+        self.experiments[name] = (not current) if enabled is None else bool(enabled)
+        self._experimental_cache_key = None
+        self._bump()
+        return True
+
+    def experimental_analysis(self) -> dict | None:
+        """Compute analytics only while an experiment is explicitly enabled.
+
+        Tracking data advances at 25 Hz while state snapshots are broadcast at
+        30 Hz.  Keying the cache by frame avoids doing identical work twice and
+        keeps the default (all flags off) path at effectively zero cost.
+        """
+        if not any(self.experiments.values()):
+            return None
+        cache_key = (
+            self.frame_index,
+            self.revision,
+            self.possession,
+            round(self.ball[0], 2),
+            round(self.ball[1], 2),
+            self.experiments["receiverTargets"],
+        )
+        if cache_key != self._experimental_cache_key:
+            self._experimental_cache = analyze_experimental(
+                self.players,
+                self.ball,
+                self.possession,
+                PITCH_LENGTH,
+                PITCH_WIDTH,
+                include_receiver_targets=self.experiments["receiverTargets"],
+            )
+            self._experimental_cache_key = cache_key
+        return self._experimental_cache
 
     def team_formations(self) -> dict:
         """{home: "4-3-3", away: "4-4-2"} or empty strings when unknown. Runs
@@ -405,6 +457,8 @@ class AppState:
             "shadowOverlay": self.shadow_overlay,
             "pitchControlOverlay": self.pitch_control_overlay,
             "formationOverlay": self.formation_overlay,
+            "experiments": dict(self.experiments),
+            "experimentalAnalysis": self.experimental_analysis(),
             "formations": self.team_formations(),
             "shadowSeconds": self.shadow_seconds,
             "possession": self.possession,

@@ -15,7 +15,10 @@ CommandType = Literal[
     "TOGGLE_OFFSIDE",           # {}
     "TOGGLE_COMPACTNESS",       # {}  -- line-to-line + width readout
     "TOGGLE_SHADOWS",           # {}  -- defender reach shadows
+    "TOGGLE_PITCH_CONTROL",     # {}  -- arrival/nearest-player control map
+    "TOGGLE_FORMATION",         # {}  -- inferred team formations
     "SET_SHADOW_SECONDS",       # {seconds}  -- reach horizon, clamped 0.5-4.0
+    "SET_EXPERIMENT",           # {name, enabled?} -- opt-in analytics feature
     "LOAD_MATCH",               # {matchId}  -- switch the active test match
     "PING",                     # {t}  -- client clock, echoed back for RTT
 ]

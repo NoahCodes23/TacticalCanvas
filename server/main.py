@@ -214,6 +214,15 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         state.toggle_pitch_control()
     elif t == "TOGGLE_FORMATION":
         state.toggle_formation()
+    elif t == "SET_EXPERIMENT":
+        name = p.get("name")
+        enabled = p.get("enabled") if "enabled" in p else None
+        valid_enabled = enabled is None or isinstance(enabled, bool)
+        if not isinstance(name, str) or not valid_enabled or not state.set_experiment(name, enabled):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"invalid experiment setting {name!r}={enabled!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
     elif t == "SET_SHADOW_SECONDS":
         try:
             state.set_shadow_seconds(float(p.get("seconds", 2.0)))
