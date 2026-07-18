@@ -47,11 +47,40 @@
     .ev.k-defense .lab { color: #6ee7b7; }
     .ev.k-foul .lab { color: #fbbf24; }
     .ev.k-pass .lab { color: #aebfce; font-weight: 500; }
+
+    /* Compactness / width HUD, pinned to the bottom-left of the pitch stage.
+       Hidden by default; visibility follows state.compactnessOverlay. */
+    #compact { position: absolute; left: 14px; bottom: 14px; display: none;
+               background: rgba(10, 15, 20, .78); border: 1px solid #1e2a35;
+               border-radius: 8px; padding: 9px 12px; color: #e6edf3;
+               font: 500 12px system-ui, sans-serif; letter-spacing: .02em;
+               pointer-events: none; }
+    #compact.on { display: block; }
+    #compact h3 { font: 600 10px system-ui, sans-serif; letter-spacing: .12em;
+                  text-transform: uppercase; color: #7d8fa1; margin: 0 0 6px; }
+    #compact table { border-collapse: collapse; font: 12px ui-monospace, monospace; }
+    #compact th { font: 600 10px system-ui, sans-serif; letter-spacing: .08em;
+                  color: #7d8fa1; text-transform: uppercase; padding: 0 8px 3px 0;
+                  text-align: left; }
+    #compact th.h { color: #38bdf8; } #compact th.a { color: #fb7185; }
+    #compact td { padding: 1px 8px 1px 0; color: #c9d6e3; }
+    #compact td.lab { color: #7d8fa1; font: 600 10px system-ui, sans-serif;
+                      letter-spacing: .08em; text-transform: uppercase; }
   </style>
 </head>
 <body>
   <div id="app">
-    <div id="stage"></div>
+    <div id="stage">
+      <div id="compact">
+        <h3>Compactness · Width</h3>
+        <table>
+          <tr><th></th><th class="h">home</th><th class="a">away</th></tr>
+          <tr><td class="lab">back → mid</td><td id="cm-hbm">—</td><td id="cm-abm">—</td></tr>
+          <tr><td class="lab">mid → fwd</td><td id="cm-hmf">—</td><td id="cm-amf">—</td></tr>
+          <tr><td class="lab">width</td><td id="cm-hw">—</td><td id="cm-aw">—</td></tr>
+        </table>
+      </div>
+    </div>
     <aside>
       <h1>TacticalCanvas</h1>
       <div class="sub">prototype · monocular gesture input</div>
@@ -66,6 +95,7 @@
 
       <h2>Tactics</h2>
       <button id="offside">▎ Offside line</button>
+      <button id="compact-btn">▤ Compactness &amp; width</button>
 
       <h2>Match events</h2>
       <div id="events"><div class="sub">waiting for kickoff…</div></div>
@@ -128,6 +158,7 @@
     $("reset").onclick = () => conn.send("RESET_SCENARIO");
     $("calib").onclick = () => conn.send("TOGGLE_CALIBRATION");
     $("offside").onclick = () => conn.send("TOGGLE_OFFSIDE");
+    $("compact-btn").onclick = () => conn.send("TOGGLE_COMPACTNESS");
     $("proj").onclick = () => window.open("/projector", "_blank", "width=1280,height=720");
 
     const cls = (el, good) => (el.className = good ? "ok" : "bad");
@@ -212,7 +243,50 @@
       $("play").textContent = state.playing ? "⏸ Pause & Edit" : "▶ Resume";
       $("play").className = state.playing ? "primary" : "warn";
       $("offside").className = state.offsideOverlay ? "primary" : "";
+      $("compact-btn").className = state.compactnessOverlay ? "primary" : "";
+      updateCompactness();
     }, 200);
+
+    // Compactness / width readout. Excludes the GK (deepest outfielder on each
+    // team) then splits the remaining players into back/mid/fwd buckets along
+    // the axis each team defends. Reported in metres.
+    const compactEl = $("compact");
+    function teamLines(players) {
+      if (players.length < 6) return null;
+      const cx = players.reduce((s, p) => s + p.x, 0) / players.length;
+      const defendsLeft = cx < 52.5;
+      const depth = (p) => defendsLeft ? p.x : (105 - p.x);
+      const sorted = [...players].sort((a, b) => depth(a) - depth(b));
+      const outfield = sorted.slice(1);                    // drop GK (deepest)
+      const n = outfield.length;
+      const bEnd = Math.max(2, Math.round(n * 0.4));
+      const mEnd = Math.max(bEnd + 1, Math.round(n * 0.7));
+      const back = outfield.slice(0, bEnd);
+      const mid = outfield.slice(bEnd, mEnd);
+      const fwd = outfield.slice(mEnd);
+      if (!mid.length || !fwd.length) return null;
+      const md = (a) => a.reduce((s, p) => s + depth(p), 0) / a.length;
+      const ys = outfield.map((p) => p.y);
+      return {
+        backMid: md(mid) - md(back),
+        midFwd: md(fwd) - md(mid),
+        width: Math.max(...ys) - Math.min(...ys),
+      };
+    }
+    function updateCompactness() {
+      if (!state?.compactnessOverlay) { compactEl.classList.remove("on"); return; }
+      compactEl.classList.add("on");
+      const home = state.players.filter((p) => p.team === "home");
+      const away = state.players.filter((p) => p.team === "away");
+      const h = teamLines(home), a = teamLines(away);
+      const fmt = (v) => v == null ? "—" : `${v.toFixed(1)} m`;
+      $("cm-hbm").textContent = fmt(h?.backMid);
+      $("cm-hmf").textContent = fmt(h?.midFwd);
+      $("cm-hw").textContent  = fmt(h?.width);
+      $("cm-abm").textContent = fmt(a?.backMid);
+      $("cm-amf").textContent = fmt(a?.midFwd);
+      $("cm-aw").textContent  = fmt(a?.width);
+    }
   </script>
 </body>
 </html>

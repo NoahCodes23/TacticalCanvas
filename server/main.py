@@ -187,6 +187,8 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         state.toggle_calibration()
     elif t == "TOGGLE_OFFSIDE":
         state.toggle_offside()
+    elif t == "TOGGLE_COMPACTNESS":
+        state.toggle_compactness()
     elif t == "DRAG_PLAYER_START":
         state.drag_start(p["playerId"], p["boardX"], p["boardY"], owner)
     elif t == "DRAG_PLAYER_MOVE":
