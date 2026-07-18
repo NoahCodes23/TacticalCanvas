@@ -243,6 +243,7 @@
         <tr><td>tracking frame</td><td id="d-frame">—</td></tr>
         <tr><td>media time</td><td id="d-time">—</td></tr>
         <tr><td>renderer fps</td><td id="d-fps">—</td></tr>
+        <tr><td>renderer quality</td><td id="d-render">—</td></tr>
         <tr><td>camera capture</td><td id="d-capturefps">—</td></tr>
         <tr><td>vision fps</td><td id="d-vfps">—</td></tr>
         <tr><td>inference</td><td id="d-inference">—</td></tr>
@@ -399,6 +400,7 @@
       $("d-rtt").className = conn.rtt < 30 ? "ok" : conn.rtt < 100 ? "warnc" : "bad";
       $("d-recon").textContent = conn.reconnects;
       $("d-fps").textContent = renderer.fps.toFixed(0);
+      $("d-render").textContent = `${renderer.quality} / ${renderer.renderResolution.toFixed(2)}x`;
       if (!state) return;
 
       renderMatches();

@@ -29,6 +29,25 @@ interpolation, keystone correction, noise reduction, and other image processing
 where the hardware permits. Prefer a direct HDMI connection and the highest
 native refresh rate shared by the PC and projector.
 
+### Projector rendering quality
+
+The dashboard and projector use **sharp** rendering by default: antialiasing is
+enabled, the Pixi canvas is supersampled at least 1.5x (up to 2x based on display
+DPI), and text textures remain at 2x. This makes small tactical labels readable
+without changing pitch coordinates or camera calibration. The current render
+scale appears in dashboard diagnostics.
+
+If a low-power GPU cannot hold the desired frame rate, reload either page with
+the performance preset to restore the original 1x canvas:
+
+```text
+http://localhost:8000/projector?quality=performance
+```
+
+For comparison and tuning, `?renderScale=1.25`, `1.5`, or `2` overrides the
+canvas scale while retaining the selected quality preset. Values are clamped to
+the safe 1x-2x range.
+
 ## Experimental tactical analysis
 
 The dashboard has three independent **Experimental AI** switches. They are all
