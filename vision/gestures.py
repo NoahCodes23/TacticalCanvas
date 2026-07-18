@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import math
 
-PINCH_CLOSE_RATIO = 0.38
-PINCH_RELEASE_RATIO = 0.52
+PINCH_CLOSE_RATIO = 0.45
+PINCH_RELEASE_RATIO = 0.72
+WORLD_PINCH_CLOSE_RATIO = 0.38
+WORLD_PINCH_RELEASE_RATIO = 0.58
 PINCH_GRAB_FRAMES = 2
 PINCH_RELEASE_FRAMES = 4
 SMOOTH_ALPHA = 0.70
@@ -17,21 +19,53 @@ def _pixel(landmarks, index: int, width: int, height: int) -> tuple[float, float
     return landmark.x * width, landmark.y * height
 
 
+def _point3(landmarks, index: int) -> tuple[float, float, float]:
+    landmark = landmarks[index]
+    return float(landmark.x), float(landmark.y), float(landmark.z)
+
+
 def pinch_pointer(
-    landmarks, width: int, height: int
-) -> tuple[tuple[float, float], float]:
-    """Return the midpoint of both fingertips and a hand-scale pinch ratio."""
+    landmarks, width: int, height: int, world_landmarks=None
+) -> tuple[tuple[float, float], float, float | None]:
+    """Return pointer plus visible and 3D thumb-index pinch ratios.
+
+    The visible image ratio is authoritative: what looks closed to the user is
+    a pinch, and what looks open is a release. The world ratio only resolves
+    the hysteresis band between those two states.
+    """
 
     thumb_tip = _pixel(landmarks, 4, width, height)
     index_tip = _pixel(landmarks, 8, width, height)
-    wrist = _pixel(landmarks, 0, width, height)
-    middle_mcp = _pixel(landmarks, 9, width, height)
-    palm_size = max(1.0, math.dist(wrist, middle_mcp))
     cursor = (
         (thumb_tip[0] + index_tip[0]) / 2.0,
         (thumb_tip[1] + index_tip[1]) / 2.0,
     )
-    return cursor, math.dist(thumb_tip, index_tip) / palm_size
+
+    image_palm_size = max(
+        math.dist(_pixel(landmarks, 5, width, height),
+                  _pixel(landmarks, 17, width, height)),
+        0.75 * math.dist(_pixel(landmarks, 0, width, height),
+                         _pixel(landmarks, 9, width, height)),
+        1.0,
+    )
+    image_ratio = math.dist(thumb_tip, index_tip) / image_palm_size
+
+    world_ratio = None
+    if world_landmarks:
+        world_palm_size = max(
+            math.dist(_point3(world_landmarks, 5),
+                      _point3(world_landmarks, 17)),
+            0.75 * math.dist(_point3(world_landmarks, 0),
+                             _point3(world_landmarks, 9)),
+            1e-6,
+        )
+        world_ratio = (
+            math.dist(_point3(world_landmarks, 4),
+                      _point3(world_landmarks, 8))
+            / world_palm_size
+        )
+
+    return cursor, image_ratio, world_ratio
 
 
 class HandTracker:
@@ -46,7 +80,11 @@ class HandTracker:
         self.last_seen = 0.0
 
     def update(
-        self, board_pt: tuple[float, float], pinch_ratio: float, now: float
+        self,
+        board_pt: tuple[float, float],
+        pinch_ratio: float,
+        now: float,
+        world_pinch_ratio: float | None = None,
     ) -> str | None:
         stale = (now - self.last_seen) * 1000.0 > STALE_MS
         self.last_seen = now
@@ -72,10 +110,17 @@ class HandTracker:
 
         self.pinch_ratio = pinch_ratio
         wants = self.grabbing
+        # The visible gesture wins at both extremes. Depth is useful only in
+        # the ambiguous middle, where it cannot veto visibly touching tips.
         if pinch_ratio <= PINCH_CLOSE_RATIO:
             wants = True
         elif pinch_ratio >= PINCH_RELEASE_RATIO:
             wants = False
+        elif world_pinch_ratio is not None:
+            if world_pinch_ratio <= WORLD_PINCH_CLOSE_RATIO:
+                wants = True
+            elif world_pinch_ratio >= WORLD_PINCH_RELEASE_RATIO:
+                wants = False
 
         if wants != self.grabbing:
             self.pending += 1
