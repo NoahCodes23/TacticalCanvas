@@ -244,6 +244,7 @@
       <button id="shadows">◈ Defender shadows</button>
       <button id="pitchctrl">▦ Pitch control</button>
       <button id="formation">◇ Formation detect</button>
+      <button id="suggested">◯ Suggested positions</button>
 
       <h2>Experimental AI</h2>
       <div class="demo-grid">
@@ -487,6 +488,7 @@
     $("shadows").onclick = () => conn.send("TOGGLE_SHADOWS");
     $("pitchctrl").onclick = () => conn.send("TOGGLE_PITCH_CONTROL");
     $("formation").onclick = () => conn.send("TOGGLE_FORMATION");
+    $("suggested").onclick = () => conn.send("TOGGLE_SUGGESTED");
     const toggleExperiment = (name) => conn.send("SET_EXPERIMENT", {
       name,
       enabled: !state?.experiments?.[name],
@@ -632,6 +634,7 @@
       $("shadows").className = state.shadowOverlay ? "primary" : "";
       $("pitchctrl").className = state.pitchControlOverlay ? "primary" : "";
       $("formation").className = state.formationOverlay ? "primary" : "";
+      $("suggested").className = state.suggestedOverlay ? "primary" : "";
       const setExperimentButton = (id, enabled) => {
         $(id).classList.toggle("primary", !!enabled);
         $(`${id}-state`).textContent = enabled ? "ON" : "OFF";

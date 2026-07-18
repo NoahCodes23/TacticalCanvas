@@ -437,6 +437,8 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         state.toggle_pitch_control()
     elif t == "TOGGLE_FORMATION":
         state.toggle_formation()
+    elif t == "TOGGLE_SUGGESTED":
+        state.toggle_suggested()
     elif t == "SET_EXPERIMENT":
         name = p.get("name")
         enabled = p.get("enabled") if "enabled" in p else None

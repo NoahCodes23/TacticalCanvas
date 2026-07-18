@@ -170,6 +170,48 @@ export class PitchRenderer {
     else if (this._offsideLabels) this._offsideLabels.forEach((t) => (t.visible = false));
     if (this.state?.formationOverlay) this._drawFormation();
     else if (this._formationLabels) this._formationLabels.forEach((t) => (t.visible = false));
+    if (this.state?.suggestedOverlay) this._drawSuggestions(g);
+    else this._hideTextPool(this._suggestedLabels);
+  }
+
+  // Ghost circles at server-suggested off-ball positions. Team-coloured stroke,
+  // dashed guide from current spot -> ghost, small "+ΔPC" label. These are
+  // deliberately hollow so they don't compete with the solid player dots -- the
+  // read is "here's where you could be", not "here's a player."
+  _drawSuggestions(g) {
+    const suggestions = this.state?.suggestedPositions || [];
+    this._hideTextPool(this._suggestedLabels);
+    suggestions.forEach((s, index) => {
+      if (!s.current || !s.suggested) return;
+      const colour = s.team === "away" ? COL_AWAY : COL_HOME;
+      const x1 = this.mx(s.current.x),   y1 = this.my(s.current.y);
+      const x2 = this.mx(s.suggested.x), y2 = this.my(s.suggested.y);
+      const dx = x2 - x1, dy = y2 - y1;
+      const length = Math.hypot(dx, dy);
+      if (length < 1) return;
+      const ux = dx / length, uy = dy / length;
+      // dashed guide from current position toward ghost
+      const dash = Math.max(4, this.L.scale * 0.45);
+      g.lineStyle(Math.max(1.2, this.L.scale * 0.09), colour, 0.55);
+      for (let travelled = 0; travelled < length; travelled += dash * 1.8) {
+        const finish = Math.min(travelled + dash, length);
+        g.moveTo(x1 + ux * travelled, y1 + uy * travelled);
+        g.lineTo(x1 + ux * finish, y1 + uy * finish);
+      }
+      // hollow ghost circle at the suggested spot
+      const r = Math.max(6, this.L.scale * 0.85);
+      g.lineStyle(Math.max(1.8, this.L.scale * 0.14), colour, 0.85);
+      g.drawCircle(x2, y2, r);
+
+      const label = this._textFromPool("_suggestedLabels", index, {
+        fontFamily: "ui-monospace, monospace", fontSize: 12,
+        fill: colour, fontWeight: "bold", stroke: 0x071018, strokeThickness: 3,
+      });
+      label.visible = true;
+      label.style.fontSize = Math.max(11, this.L.scale * 0.75);
+      label.text = `#${s.playerNumber} +${(s.gain * 100).toFixed(0)}%`;
+      label.position.set(x2, y2 - r * 1.7);
+    });
   }
 
   _hideTextPool(pool) {
@@ -670,12 +712,13 @@ export class PitchRenderer {
   applyState(state) {
     const aiOverlay = state.experiments?.passRecommendations || state.experiments?.receiverTargets;
     const overlaysActive = state.calibrationOverlay || state.shadowOverlay
-      || state.offsideOverlay || state.formationOverlay || aiOverlay;
+      || state.offsideOverlay || state.formationOverlay || state.suggestedOverlay || aiOverlay;
     if (overlaysActive
         || this.state?.calibrationOverlay !== state.calibrationOverlay
         || this.state?.shadowOverlay !== state.shadowOverlay
         || this.state?.offsideOverlay !== state.offsideOverlay
         || this.state?.formationOverlay !== state.formationOverlay
+        || this.state?.suggestedOverlay !== state.suggestedOverlay
         || this.state?.experiments?.passRecommendations !== state.experiments?.passRecommendations
         || this.state?.experiments?.receiverTargets !== state.experiments?.receiverTargets) {
       this.overlayDirty = true;

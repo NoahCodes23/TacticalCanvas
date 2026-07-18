@@ -7,6 +7,7 @@ from . import match_data
 from .analytics.experimental import analyze as analyze_experimental
 from .analytics.formation import detect_formation
 from .analytics.reach import reach_polygon
+from .analytics.suggested import suggested_positions
 from .match_data import PITCH_LENGTH, PITCH_WIDTH, Player
 
 GRAB_RADIUS_M = 3.0
@@ -61,6 +62,9 @@ class AppState:
         self.shadow_overlay = False
         self.pitch_control_overlay = False
         self.formation_overlay = False
+        self.suggested_overlay = False
+        self._suggested_cache_key = None
+        self._suggested_cache = []
         self.experiments = dict(EXPERIMENT_DEFAULTS)
         # Sized by the shape it draws rather than the number: 2s puts a standing
         # player's reach at ~8m, half of what the old 3s default drew. Reach is
@@ -248,6 +252,9 @@ class AppState:
         self.shadow_overlay = False
         self.pitch_control_overlay = False
         self.formation_overlay = False
+        self.suggested_overlay = False
+        self._suggested_cache_key = None
+        self._suggested_cache = []
         self.experiments = dict(EXPERIMENT_DEFAULTS)
         self._experimental_cache_key = None
         self._experimental_cache = None
@@ -382,6 +389,35 @@ class AppState:
     def toggle_formation(self) -> None:
         self.formation_overlay = not self.formation_overlay
         self._bump()
+
+    def toggle_suggested(self) -> None:
+        self.suggested_overlay = not self.suggested_overlay
+        self._suggested_cache_key = None
+        self._bump()
+
+    def suggested_positions_snapshot(self) -> list[dict]:
+        """Ghost-position suggestions for the possession team. Empty when off.
+        Cached per (frame, revision, ball) so a paused edit that shifts a
+        defender re-runs it, but idle playback doesn't."""
+        if not self.suggested_overlay:
+            return []
+        cache_key = (
+            self.frame_index,
+            self.revision,
+            self.possession,
+            round(self.ball[0], 2),
+            round(self.ball[1], 2),
+        )
+        if cache_key != self._suggested_cache_key:
+            self._suggested_cache = suggested_positions(
+                self.players,
+                self.ball,
+                self.possession,
+                PITCH_LENGTH,
+                PITCH_WIDTH,
+            )
+            self._suggested_cache_key = cache_key
+        return self._suggested_cache
 
     def set_experiment(self, name: str, enabled: bool | None = None) -> bool:
         """Enable/toggle one allow-listed experiment; return False if unknown."""
@@ -629,6 +665,8 @@ class AppState:
             "shadowOverlay": self.shadow_overlay,
             "pitchControlOverlay": self.pitch_control_overlay,
             "formationOverlay": self.formation_overlay,
+            "suggestedOverlay": self.suggested_overlay,
+            "suggestedPositions": self.suggested_positions_snapshot(),
             "experiments": dict(self.experiments),
             "experimentalAnalysis": self.experimental_analysis(),
             "formations": self.team_formations(),
