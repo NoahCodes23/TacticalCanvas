@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import match_data
+from . import ingest, match_data
 from .coach import CoachServiceError, request_coach_advice
 from .protocol import PROTOCOL_VERSION, Envelope, server_message
 from .state import AppState, now_ms
@@ -285,6 +285,57 @@ async def list_uploads():
 @app.get("/api/matches")
 async def list_prepared_matches():
     return {"items": match_data.list_matches()}
+
+
+# --------------------------------------------------------------------------- #
+# scenario ingest: run tools/prepare_video against an uploaded clip
+# --------------------------------------------------------------------------- #
+@app.post("/api/scenarios/ingest")
+async def start_ingest(request: Request):
+    """Body: {"videoName": "<file in data/uploads/>", "label": "<optional>"}.
+    Returns the job id; poll GET /api/scenarios/ingest/{id} for progress."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "expected JSON body")
+    video_name = body.get("videoName")
+    if not isinstance(video_name, str) or not video_name.strip():
+        raise HTTPException(400, "videoName required")
+    if video_name != os.path.basename(video_name) or video_name.startswith("."):
+        raise HTTPException(400, "bad videoName")
+    label = body.get("label") if isinstance(body.get("label"), str) else None
+    try:
+        job = ingest.create_job(video_name, label=label)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(503, str(e)) from e
+    asyncio.create_task(ingest.run(job, label=label))
+    return JSONResponse(job.to_dict())
+
+
+@app.get("/api/scenarios/ingest")
+async def list_ingest_jobs():
+    return {"items": ingest.list_jobs()}
+
+
+@app.get("/api/scenarios/ingest/{job_id}")
+async def get_ingest_job(job_id: str):
+    job = ingest.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    return job.to_dict()
+
+
+@app.delete("/api/scenarios/ingest/{job_id}")
+async def cancel_ingest_job(job_id: str):
+    job = ingest.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    ok = await ingest.cancel(job)
+    if not ok:
+        raise HTTPException(409, f"job is {job.status}, cannot cancel")
+    return job.to_dict()
 
 
 @app.get("/uploads/{name}")
