@@ -1,0 +1,44 @@
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+PROTOCOL_VERSION = 1
+CommandType = Literal[
+    "SET_PLAYING",              # {playing: bool}
+    "ENTER_EDIT_MODE",          # {}
+    "EXIT_EDIT_MODE",           # {}
+    "DRAG_PLAYER_START",        # {playerId, boardX, boardY}
+    "DRAG_PLAYER_MOVE",         # {playerId, boardX, boardY}
+    "DRAG_PLAYER_END",          # {playerId}
+    "RESET_SCENARIO",           # {}
+    "TOGGLE_CALIBRATION",       # {}
+    "PING",                     # {t}  -- client clock, echoed back for RTT
+]
+
+ServerMessageType = Literal["STATE_SNAPSHOT", "ERROR", "PONG"]
+
+class Envelope(BaseModel):
+    protocolVersion: int = PROTOCOL_VERSION
+    scenarioId: str = "demo"
+    clientId: str = "unknown"
+    sequenceNumber: int = 0
+    timestamp: float = 0.0
+    type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+def server_message(
+    msg_type: ServerMessageType,
+    payload: dict[str, Any],
+    scenario_id: str,
+    sequence: int,
+    timestamp_ms: float,
+) -> dict[str, Any]:
+    return {
+        "protocolVersion": PROTOCOL_VERSION,
+        "scenarioId": scenario_id,
+        "clientId": "server",
+        "sequenceNumber": sequence,
+        "timestamp": timestamp_ms,
+        "type": msg_type,
+        "payload": payload,
+    }
