@@ -1,5 +1,7 @@
 import math
 import time
+from collections import deque
+from types import SimpleNamespace
 
 from . import match_data
 from .analytics.experimental import analyze as analyze_experimental
@@ -28,6 +30,10 @@ EXPERIMENT_DEFAULTS = {
     "technicalIndicators": False,
     "receiverTargets": False,
 }
+
+COACH_RAW_HISTORY_FRAMES = 20
+COACH_SNAPSHOT_COUNT = 5
+COACH_SNAPSHOT_SPACING_FRAMES = 10  # 400 ms at the 25 Hz tracking rate
 
 
 def now_ms() -> float:
@@ -72,6 +78,10 @@ class AppState:
         self.cursors: dict[str, dict] = {}
         self._experimental_cache_key: tuple | None = None
         self._experimental_cache: dict | None = None
+        # Keep a cheap, raw tracking history at the native 25 Hz frame rate.
+        # The expensive tactical indicators are calculated only when the coach
+        # explicitly asks for LLM advice.
+        self._coach_history: deque[dict] = deque(maxlen=COACH_RAW_HISTORY_FRAMES)
 
         self.vision_stats = {
             "fps": 0.0,
@@ -84,6 +94,7 @@ class AppState:
             "captureToServerMs": 0.0,
             "captureDrops": 0,
         }
+        self._record_coach_frame()
 
     def _bump(self) -> None:
         self.revision += 1
@@ -135,6 +146,7 @@ class AppState:
         # Runs while paused too, so dragging a player in edit mode can hand
         # possession over and flip which team the shadows are drawn for.
         self._update_possession()
+        self._record_coach_frame()
 
     def _update_possession(self) -> None:
         """Whoever is nearest the ball has it, with hysteresis (see
@@ -181,9 +193,21 @@ class AppState:
         """Video says 'we're now at this displayed frame'. Pin the tracking
         clock to it and, if the caller told us, mirror its play/pause state
         (so a coach hitting space in the video also freezes the pitch)."""
-        self.media_time_ms = max(0.0, float(media_time_ms))
-        self.frame_index = int(self.media_time_ms / 40.0)
+        next_media_time_ms = max(0.0, float(media_time_ms))
+        next_frame_index = int(next_media_time_ms / 40.0)
+        # A seek should start a fresh temporal window; mixing frames from two
+        # distant moments would produce misleading coaching advice.
+        if abs(next_frame_index - self.frame_index) > 2:
+            self._coach_history.clear()
+        self.media_time_ms = next_media_time_ms
+        self.frame_index = next_frame_index
         self.external_clock_last_ms = now_ms()
+        if not self.edit_mode:
+            t = self.media_time_ms / 1000.0
+            match_data.advance(self.players, t)
+            self.ball = match_data.ball_position(t)
+            self._update_possession()
+            self._record_coach_frame()
         if playing is not None:
             was_playing = self.playing
             self.playing = bool(playing)
@@ -203,6 +227,9 @@ class AppState:
         self.playing = True
         self.media_time_ms = 0.0
         self.frame_index = 0
+        self.ball = match_data.ball_position(0.0)
+        self._coach_history.clear()
+        self._record_coach_frame()
         self._bump()
 
     def load_match(self, match_id: str) -> bool:
@@ -228,8 +255,109 @@ class AppState:
         self.media_time_ms = 0.0
         self.frame_index = 0
         self.ball = match_data.ball_position(0.0)
+        self._coach_history.clear()
+        self._record_coach_frame()
         self._bump()
         return True
+
+    def _record_coach_frame(self) -> None:
+        """Store one raw sample per tracking frame, replacing same-frame edits."""
+        sample = {
+            "frameIndex": self.frame_index,
+            "mediaTimeMs": round(self.media_time_ms, 1),
+            "possession": self.possession,
+            "ball": {"x": round(self.ball[0], 2), "y": round(self.ball[1], 2)},
+            "players": self._players_snapshot(),
+        }
+        if self._coach_history and self._coach_history[-1]["frameIndex"] == self.frame_index:
+            self._coach_history[-1] = sample
+        else:
+            self._coach_history.append(sample)
+
+    def coach_frame_inputs(self) -> list[dict]:
+        """Return five meaningful snapshots over the latest 1.6 seconds."""
+        self._record_coach_frame()
+        by_index = {frame["frameIndex"]: frame for frame in self._coach_history}
+        desired_indices = sorted({
+            max(0, self.frame_index - offset * COACH_SNAPSHOT_SPACING_FRAMES)
+            for offset in range(COACH_SNAPSHOT_COUNT - 1, -1, -1)
+        })
+        ordered: list[dict] = []
+        fallback_possession = self.possession
+        for frame_index in desired_indices:
+            frame = by_index.get(frame_index)
+            if frame is None:
+                frame = self._sample_match_frame(frame_index, fallback_possession)
+            fallback_possession = frame["possession"]
+            ordered.append(frame)
+        return [
+            {
+                **frame,
+                "ball": dict(frame["ball"]),
+                "players": [dict(player) for player in frame["players"]],
+            }
+            for frame in ordered
+        ]
+
+    @staticmethod
+    def _sample_match_frame(frame_index: int, fallback_possession: str) -> dict:
+        """Reconstruct a raw tracking frame when the browser jumped to it."""
+        players = match_data.build_players()
+        media_time_ms = frame_index * 40.0
+        match_data.advance(players, media_time_ms / 1000.0)
+        ball = match_data.ball_position(media_time_ms / 1000.0)
+        nearest = {"home": math.inf, "away": math.inf}
+        for player in players:
+            nearest[player.team] = min(
+                nearest.get(player.team, math.inf),
+                math.hypot(player.x - ball[0], player.y - ball[1]),
+            )
+        possession = min(nearest, key=nearest.get) if players else fallback_possession
+        return {
+            "frameIndex": frame_index,
+            "mediaTimeMs": media_time_ms,
+            "possession": possession,
+            "ball": {"x": round(ball[0], 2), "y": round(ball[1], 2)},
+            "players": [
+                {
+                    "id": player.id,
+                    "team": player.team,
+                    "number": player.number,
+                    "x": round(player.x, 2),
+                    "y": round(player.y, 2),
+                    "vx": round(player.vx, 2),
+                    "vy": round(player.vy, 2),
+                    "edited": player.edited,
+                    "grabbed": False,
+                }
+                for player in players
+            ],
+        }
+
+    @staticmethod
+    def analyze_coach_frames(frames: list[dict]) -> list[dict]:
+        """Calculate the complete tactical model for a captured frame window."""
+        analyzed: list[dict] = []
+        newest_time = frames[-1]["mediaTimeMs"] if frames else 0.0
+        for frame in frames:
+            players = [SimpleNamespace(**player) for player in frame["players"]]
+            ball = (float(frame["ball"]["x"]), float(frame["ball"]["y"]))
+            indicators = analyze_experimental(
+                players,
+                ball,
+                frame["possession"],
+                PITCH_LENGTH,
+                PITCH_WIDTH,
+                include_receiver_targets=True,
+                receiver_target_limit=None,
+                include_hold_targets=True,
+            )
+            analyzed.append({
+                **frame,
+                "relativeTimeMs": round(frame["mediaTimeMs"] - newest_time, 1),
+                "analysis": indicators,
+            })
+        return analyzed
 
     def toggle_calibration(self) -> None:
         self.calibration_overlay = not self.calibration_overlay

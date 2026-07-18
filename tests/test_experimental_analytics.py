@@ -67,6 +67,20 @@ class ExperimentalAnalyticsTests(unittest.TestCase):
             self.assertLessEqual(target["to"]["y"], 68.0)
             self.assertGreater(target["improvement"], 0.0)
 
+    def test_coach_targets_cover_every_non_carrier_teammate(self):
+        result = analyze(
+            self.players,
+            (30, 34),
+            "home",
+            include_receiver_targets=True,
+            receiver_target_limit=None,
+            include_hold_targets=True,
+        )
+        self.assertEqual(
+            {target["playerId"] for target in result["receiverTargets"]},
+            {"H1", "H7", "H8", "H9"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
