@@ -6,7 +6,6 @@ const COL_LINE = 0xe8f5e9;
 const COL_HOME = 0x38bdf8;
 const COL_AWAY = 0xfb7185;
 const COL_BALL = 0xfde047;
-const COL_CALIB = 0xff00ff;   
 const COL_AI_PASS = [0xfde047, 0x4ade80, 0xc084fc];
 const COL_AI_FAINT = 0x94a3b8;
 const COL_AI_TARGET = 0x22d3ee;
@@ -55,8 +54,9 @@ export class PitchRenderer {
     this.overlayLayer = new PIXI.Graphics();
     this.playersLayer = new PIXI.Container();
     this.cursorsLayer = new PIXI.Container();
+    this.calibrationLayer = new PIXI.Container();
     this.app.stage.addChild(this.pitchLayer, this.pitchControlLayer, this.overlayLayer,
-                            this.playersLayer, this.cursorsLayer);
+                            this.playersLayer, this.cursorsLayer, this.calibrationLayer);
     this._initPitchControl();
 
     this.sprites = new Map();  
@@ -152,7 +152,7 @@ export class PitchRenderer {
     this.overlayDirty = false;
     const g = this.overlayLayer;
     g.clear();
-    if (this.showCalibration && this.state?.calibrationOverlay) this._drawCalibration(g);
+    this._syncCalibrationMarkers();
     // Shadows first: the offside line and the players read on top of them.
     if (this.state?.shadowOverlay) this._drawShadows(g);
     else {
@@ -441,18 +441,38 @@ export class PitchRenderer {
     t.position.set(this.mx(0), this.my(0) - 4);
   }
 
-  _drawCalibration(g) {
-    const corners = [[0, 0], [1, 0], [1, 1], [0, 1]];
-    const r = Math.max(18, this.L.scale * 1.6);
-    corners.forEach(([cx, cy], i) => {
-      const x = this.bx(cx), y = this.by(cy);
-      g.lineStyle(4, COL_CALIB, 1);
-      g.drawCircle(x, y, r);
-      g.drawCircle(x, y, r * 0.45);
-      g.moveTo(x - r * 1.6, y); g.lineTo(x + r * 1.6, y);
-      g.moveTo(x, y - r * 1.6); g.lineTo(x, y + r * 1.6);
-      this._corner(i, x, y, r);
-    });
+  _syncCalibrationMarkers() {
+    const active = this.showCalibration && this.state?.calibrationOverlay;
+    this.calibrationLayer.visible = !!active;
+    if (!active) return;
+    const layout = this.state?.calibrationLayout || [];
+    const key = layout.map((marker) => marker.markerId).join(",");
+    if (this._calibrationLayoutKey !== key) {
+      this.calibrationLayer.removeChildren().forEach((child) => child.destroy());
+      this._calibrationMarkers = layout.map((marker) => {
+        const quiet = new PIXI.Graphics();
+        quiet.beginFill(0xffffff, 1);
+        quiet.drawRect(0, 0, 1, 1);
+        quiet.endFill();
+        const image = PIXI.Sprite.from(`/api/calibration/markers/${marker.markerId}.png`);
+        this.calibrationLayer.addChild(quiet, image);
+        return { marker, quiet, image };
+      });
+      this._calibrationLayoutKey = key;
+    }
+    for (const { marker, quiet, image } of this._calibrationMarkers || []) {
+      const x = this.bx(marker.x), y = this.by(marker.y);
+      const width = marker.width * this.L.pw;
+      const height = marker.height * this.L.ph;
+      const quietX = marker.quietX * this.L.pw;
+      const quietY = marker.quietY * this.L.ph;
+      quiet.position.set(x - quietX, y - quietY);
+      quiet.width = width + quietX * 2;
+      quiet.height = height + quietY * 2;
+      image.position.set(x, y);
+      image.width = width;
+      image.height = height;
+    }
   }
 
   // Offside line = x of the second-last defender on each team, on the half they
@@ -503,23 +523,6 @@ export class PitchRenderer {
     t.position.set(x, yTop - 4);
   }
 
-  _corner(i, x, y, r) {
-    if (!this._cornerLabels) {
-      this._cornerLabels = [0, 1, 2, 3].map(() => {
-        const t = this._makeText("", { fontFamily: "monospace", fontSize: 28,
-                                       fill: COL_CALIB, fontWeight: "bold" });
-        t.anchor.set(0.5);
-        this.overlayLayer.addChild(t);
-        return t;
-      });
-    }
-    const t = this._cornerLabels[i];
-    t.text = String(i + 1);
-    t.visible = true;
-    t.position.set(x + (i === 0 || i === 3 ? r * 2.2 : -r * 2.2),
-                   y + (i < 2 ? r * 2.2 : -r * 2.2));
-  }
-
   _frame() {
     this._syncDisplayResolution();
     const w = this.app.renderer.width / this.app.renderer.resolution;
@@ -533,9 +536,6 @@ export class PitchRenderer {
     if (this.overlayDirty) this._drawOverlay();
     this._updatePitchControl();
     if (this.state) { this._frameplayers(); this._frameCursors(); }
-    if (this._cornerLabels && !(this.showCalibration && this.state?.calibrationOverlay)) {
-      this._cornerLabels.forEach((t) => (t.visible = false));
-    }
   }
 
   // Voronoi pitch control: each cell of a low-res grid takes on the team colour

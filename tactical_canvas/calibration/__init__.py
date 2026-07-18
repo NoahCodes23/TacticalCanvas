@@ -1,5 +1,5 @@
-"""Reusable camera-to-projector calibration data types."""
+"""Reusable camera-to-field and camera-to-projector calibration data types."""
 
-from .models import DisplayInfo, Point, ProjectorCalibration, Size
+from .models import DisplayInfo, FieldCalibration, Point, ProjectorCalibration, Size
 
-__all__ = ["DisplayInfo", "Point", "ProjectorCalibration", "Size"]
+__all__ = ["DisplayInfo", "FieldCalibration", "Point", "ProjectorCalibration", "Size"]

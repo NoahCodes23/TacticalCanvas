@@ -9,6 +9,7 @@ from .analytics.formation import detect_formation
 from .analytics.reach import reach_polygon
 from .analytics.suggested import suggested_positions
 from .match_data import PITCH_LENGTH, PITCH_WIDTH, Player
+from tactical_canvas.calibration.layout import create_field_marker_layout
 
 GRAB_RADIUS_M = 3.0
 
@@ -57,6 +58,16 @@ class AppState:
 
         self.edit_mode = False
         self.calibration_overlay = False
+        self.calibration_layout = [
+            placement.to_dict() for placement in create_field_marker_layout()
+        ]
+        self.calibration_status = {
+            "phase": "idle",
+            "active": False,
+            "progress": 0.0,
+            "visibleMarkers": 0,
+            "requiredMarkers": 4,
+        }
         self.offside_overlay = False
         self.compactness_overlay = False
         self.shadow_overlay = False
@@ -367,7 +378,41 @@ class AppState:
         return analyzed
 
     def toggle_calibration(self) -> None:
-        self.calibration_overlay = not self.calibration_overlay
+        if self.calibration_overlay:
+            self.cancel_calibration()
+        else:
+            self.start_calibration()
+
+    def start_calibration(self) -> None:
+        self.calibration_overlay = True
+        self.calibration_status = {
+            "phase": "starting",
+            "active": True,
+            "progress": 0.0,
+            "visibleMarkers": 0,
+            "requiredMarkers": 4,
+        }
+        self.grabbed.clear()
+        self.cursors.clear()
+        self._bump()
+
+    def cancel_calibration(self) -> None:
+        self.calibration_overlay = False
+        self.calibration_status = {
+            **self.calibration_status,
+            "phase": "cancelled",
+            "active": False,
+        }
+        self._bump()
+
+    def fail_calibration(self, reason: str) -> None:
+        self.calibration_overlay = False
+        self.calibration_status = {
+            **self.calibration_status,
+            "phase": "failed",
+            "active": False,
+            "reason": reason,
+        }
         self._bump()
 
     def toggle_offside(self) -> None:
@@ -541,6 +586,17 @@ class AppState:
     def handle_vision_event(self, evt: dict) -> None:
         etype = evt.get("type")
 
+        if etype == "calibration_status":
+            self.calibration_status = {
+                **self.calibration_status,
+                **{key: value for key, value in evt.items() if key != "type"},
+            }
+            self.calibration_overlay = bool(self.calibration_status.get("active"))
+            if evt.get("calibrated"):
+                self.vision_stats["calibrated"] = True
+            self._bump()
+            return
+
         if etype == "vision_stats":
             received_at_ms = now_ms()
             captured_at_ms = evt.get("capturedAtMs", received_at_ms)
@@ -567,6 +623,12 @@ class AppState:
             hand = evt.get("handId", "?")
             self.cursors.pop(hand, None)
             self.drag_end(hand)
+            return
+
+        if self.calibration_status.get("active"):
+            # Async MediaPipe results submitted just before calibration started
+            # may arrive after the markers appear. Do not let those stale hand
+            # events repopulate cursors or move a piece during calibration.
             return
 
         hand = evt.get("handId", "?")
@@ -648,6 +710,8 @@ class AppState:
             "players": self._players_snapshot(),
             "cursors": self._cursors_snapshot(),
             "vision": self.vision_stats,
+            "calibrationOverlay": self.calibration_overlay,
+            "calibration": self.calibration_status,
             "serverTimestampMs": now_ms(),
         }
 
@@ -660,6 +724,8 @@ class AppState:
             "mediaTimeMs": round(self.media_time_ms, 1),
             "editMode": self.edit_mode,
             "calibrationOverlay": self.calibration_overlay,
+            "calibrationLayout": self.calibration_layout,
+            "calibration": self.calibration_status,
             "offsideOverlay": self.offside_overlay,
             "compactnessOverlay": self.compactness_overlay,
             "shadowOverlay": self.shadow_overlay,

@@ -23,6 +23,17 @@
     button.primary:hover { background: #2563eb; }
     button.warn { background: #7c2d12; border-color: #9a3412; }
     button:disabled { cursor: not-allowed; opacity: .5; }
+    #calibration-card { display: none; margin: 0 0 8px; padding: 9px 10px;
+                        border: 1px solid #334155; border-radius: 7px; background: #111a23; }
+    #calibration-card.on { display: block; }
+    #calibration-card.success { border-color: #166534; background: #102318; }
+    #calibration-card.error { border-color: #991b1b; background: #2a1215; }
+    #calibration-title { font-size: 11px; font-weight: 700; }
+    #calibration-detail { margin-top: 4px; color: #94a3b8; font-size: 10px; line-height: 1.4; }
+    #calibration-progress { height: 4px; margin-top: 7px; overflow: hidden;
+                            border-radius: 999px; background: #263442; }
+    #calibration-progress > i { display: block; width: 0; height: 100%;
+                                background: #22c55e; transition: width .12s; }
     #coach-advice { border-color: #0f766e; background: #134e4a; }
     #coach-advice:not(:disabled):hover { background: #115e59; border-color: #14b8a6; }
     #coach-advice.busy { cursor: wait; }
@@ -298,7 +309,12 @@
       <div id="events"><div class="sub">waiting for kickoff…</div></div>
 
       <h2>Setup</h2>
-      <button id="calib">◎ Calibration markers</button>
+      <button id="calib">Calibrate field</button>
+      <div id="calibration-card" aria-live="polite">
+        <div id="calibration-title">Field calibration</div>
+        <div id="calibration-detail"></div>
+        <div id="calibration-progress"><i></i></div>
+      </div>
       <button id="proj">⧉ Open projector window</button>
 
       <h2>Diagnostics</h2>
@@ -328,11 +344,12 @@
 
       <h2>How to drive it</h2>
       <div class="sub" style="line-height:1.7">
-        <b>Hand:</b> <b>one finger</b> out = grab the nearest player and drag.
-        <b>Two fingers</b> (or an open hand) = drop. Grabbing auto-pauses.<br><br>
+        <b>Hand:</b> pinch thumb and index finger together to grab the nearest player.
+        Move while pinched, then open the pinch to drop. The cursor sits between both
+        fingertips and grabbing auto-pauses.<br><br>
         <b>Mouse:</b> drag players on this pitch — always works, camera or not.<br><br>
-        <b>Calibrate:</b> show markers → click corners <b>1,2,3,4</b> in the camera
-        window → press <b>s</b>.
+        <b>Calibrate:</b> open the projector on the field, then press <b>Calibrate field</b>.
+        Keep the camera and projector still while all four corner markers are collected.
       </div>
     </aside>
   </div>
@@ -496,7 +513,9 @@
       clearCoachAdvice();
       conn.send("RESET_SCENARIO");
     };
-    $("calib").onclick = () => conn.send("TOGGLE_CALIBRATION");
+    $("calib").onclick = () => conn.send(
+      state?.calibration?.active ? "CANCEL_CALIBRATION" : "START_CALIBRATION"
+    );
     $("offside").onclick = () => conn.send("TOGGLE_OFFSIDE");
     $("compact-btn").onclick = () => conn.send("TOGGLE_COMPACTNESS");
     $("shadows").onclick = () => conn.send("TOGGLE_SHADOWS");
@@ -646,8 +665,31 @@
       const hp = state.vision.handPx || 0;
       $("d-handpx").textContent = hp ? `${hp} px / 224` : "—";
       $("d-handpx").className = hp >= 224 ? "ok" : hp >= 150 ? "warnc" : hp ? "bad" : "";
-      $("d-calib").textContent = state.vision.calibrated ? "ready" : "NOT CALIBRATED";
-      cls($("d-calib"), state.vision.calibrated);
+      const calibration = state.calibration || { phase: "idle", progress: 0 };
+      $("d-calib").textContent = calibration.active
+        ? `calibrating ${Math.round((calibration.progress || 0) * 100)}%`
+        : state.vision.calibrated ? "ready" : "NOT CALIBRATED";
+      cls($("d-calib"), state.vision.calibrated && !calibration.active);
+      const calibrationCard = $("calibration-card");
+      const phase = calibration.phase || "idle";
+      calibrationCard.className = phase === "idle" ? ""
+        : `on${phase === "succeeded" ? " success" : phase === "failed" ? " error" : ""}`;
+      $("calibration-title").textContent = phase === "succeeded" ? "Field calibration ready"
+        : phase === "failed" ? "Field calibration failed"
+        : phase === "cancelled" ? "Field calibration cancelled"
+        : "Calibrating to the field";
+      const visible = calibration.requiredVisible ?? calibration.visibleMarkers ?? 0;
+      $("calibration-detail").textContent = calibration.reason
+        || (calibration.active
+          ? `${visible}/${calibration.requiredMarkers || 4} corner markers visible. Keep the camera still.`
+          : phase === "succeeded"
+            ? `${(calibration.markersUsed || []).length} markers used; camera jitter ${calibration.cameraJitter ?? 0}px.`
+            : "Press Calibrate field to try again.");
+      $("calibration-progress").firstElementChild.style.width =
+        `${Math.round((calibration.progress || 0) * 100)}%`;
+      $("calib").textContent = calibration.active ? "Cancel calibration"
+        : state.vision.calibrated ? "Recalibrate field" : "Calibrate field";
+      $("calib").className = calibration.active ? "warn" : "";
       $("d-curs").textContent = (state.cursors || [])
         .map((c) => `${c.handId}${c.grabbing ? "*" : ""}`).join(" ") || "none";
       $("d-mode").textContent = state.editMode ? "EDIT (frozen)" : state.playing ? "playing" : "paused";
