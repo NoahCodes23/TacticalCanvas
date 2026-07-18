@@ -191,6 +191,8 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         state.toggle_compactness()
     elif t == "TOGGLE_SHADOWS":
         state.toggle_shadows()
+    elif t == "TOGGLE_PITCH_CONTROL":
+        state.toggle_pitch_control()
     elif t == "SET_SHADOW_SECONDS":
         try:
             state.set_shadow_seconds(float(p.get("seconds", 2.0)))

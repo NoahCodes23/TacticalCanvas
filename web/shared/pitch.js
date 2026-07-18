@@ -29,11 +29,13 @@ export class PitchRenderer {
     el.appendChild(this.app.view);
 
     this.pitchLayer = new PIXI.Graphics();
+    this.pitchControlLayer = new PIXI.Container();  // Voronoi shading, under everything
     this.overlayLayer = new PIXI.Graphics();
     this.playersLayer = new PIXI.Container();
     this.cursorsLayer = new PIXI.Container();
-    this.app.stage.addChild(this.pitchLayer, this.overlayLayer,
+    this.app.stage.addChild(this.pitchLayer, this.pitchControlLayer, this.overlayLayer,
                             this.playersLayer, this.cursorsLayer);
+    this._initPitchControl();
 
     this.sprites = new Map();  
     this.cursorSprites = new Map();
@@ -225,10 +227,76 @@ export class PitchRenderer {
     }
     this.fps = this.app.ticker.FPS;
     this._drawOverlay();
+    this._updatePitchControl();
     if (this.state) { this._frameplayers(); this._frameCursors(); }
     if (this._cornerLabels && !(this.showCalibration && this.state?.calibrationOverlay)) {
       this._cornerLabels.forEach((t) => (t.visible = false));
     }
+  }
+
+  // Voronoi pitch control: each cell of a low-res grid takes on the team colour
+  // of the nearest player. Rendered as a small canvas texture stretched over the
+  // pitch (LINEAR-filtered so the region edges look like soft shading rather
+  // than pixel steps). Recomputed only when the server bumps state.revision,
+  // which happens on every drag move -- so the shading is live under the coach's
+  // finger without the renderer having to run the algorithm at 60 Hz.
+  _initPitchControl() {
+    const PC_W = 50, PC_H = 32;
+    this._pcW = PC_W; this._pcH = PC_H;
+    this._pcCanvas = document.createElement("canvas");
+    this._pcCanvas.width = PC_W;
+    this._pcCanvas.height = PC_H;
+    this._pcCtx = this._pcCanvas.getContext("2d");
+    this._pcImage = this._pcCtx.createImageData(PC_W, PC_H);
+    const tex = PIXI.Texture.from(this._pcCanvas);
+    tex.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+    this._pcSprite = new PIXI.Sprite(tex);
+    this._pcSprite.alpha = 0.42;
+    this._pcSprite.visible = false;
+    this.pitchControlLayer.addChild(this._pcSprite);
+    this._pcLastRev = -1;
+  }
+
+  _updatePitchControl() {
+    const on = this.state?.pitchControlOverlay && this.state.players?.length;
+    if (!on) {
+      this._pcSprite.visible = false;
+      this._pcLastRev = -1;   // force redraw on re-enable
+      return;
+    }
+    this._pcSprite.visible = true;
+    this._pcSprite.position.set(this.mx(0), this.my(0));
+    this._pcSprite.width = this.L.pw;
+    this._pcSprite.height = this.L.ph;
+
+    if (this._pcLastRev === this.state.revision) return;
+    this._pcLastRev = this.state.revision;
+
+    const w = this._pcW, h = this._pcH;
+    const data = this._pcImage.data;
+    const players = this.state.players;
+    const sx = PITCH_L / w, sy = PITCH_W / h;
+    // Split-channel constants for the two team colours (matches COL_HOME/AWAY).
+    const HR = 0x38, HG = 0xbd, HB = 0xf8;
+    const AR = 0xfb, AG = 0x71, AB = 0x85;
+    for (let j = 0; j < h; j++) {
+      const yM = (j + 0.5) * sy;
+      for (let i = 0; i < w; i++) {
+        const xM = (i + 0.5) * sx;
+        let bestD2 = Infinity, home = true;
+        for (const p of players) {
+          const dx = p.x - xM, dy = p.y - yM;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < bestD2) { bestD2 = d2; home = p.team === "home"; }
+        }
+        const idx = (j * w + i) * 4;
+        if (home) { data[idx] = HR; data[idx + 1] = HG; data[idx + 2] = HB; }
+        else      { data[idx] = AR; data[idx + 1] = AG; data[idx + 2] = AB; }
+        data[idx + 3] = 255;
+      }
+    }
+    this._pcCtx.putImageData(this._pcImage, 0, 0);
+    this._pcSprite.texture.update();
   }
 
   _frameplayers() {

@@ -36,6 +36,7 @@ class AppState:
         self.offside_overlay = False
         self.compactness_overlay = False
         self.shadow_overlay = False
+        self.pitch_control_overlay = False
         self.shadow_seconds = 2.0
         self.possession = "home"
 
@@ -152,6 +153,7 @@ class AppState:
         self.offside_overlay = False
         self.compactness_overlay = False
         self.shadow_overlay = False
+        self.pitch_control_overlay = False
         self.playing = True
         self.media_time_ms = 0.0
         self.frame_index = 0
@@ -173,6 +175,10 @@ class AppState:
 
     def toggle_shadows(self) -> None:
         self.shadow_overlay = not self.shadow_overlay
+        self._bump()
+
+    def toggle_pitch_control(self) -> None:
+        self.pitch_control_overlay = not self.pitch_control_overlay
         self._bump()
 
     def set_shadow_seconds(self, seconds: float) -> None:
@@ -289,6 +295,7 @@ class AppState:
             "offsideOverlay": self.offside_overlay,
             "compactnessOverlay": self.compactness_overlay,
             "shadowOverlay": self.shadow_overlay,
+            "pitchControlOverlay": self.pitch_control_overlay,
             "shadowSeconds": self.shadow_seconds,
             "possession": self.possession,
             "shadows": self.defender_shadows(),
