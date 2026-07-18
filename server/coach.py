@@ -41,6 +41,12 @@ say out loud are ones that appear verbatim in a "facts" entry; if a figure isn't
 in "facts", describe it qualitatively instead. Focus on the newest snapshot; the
 earlier ones are context for how the moment developed.
 
+The briefing is written entirely from YOUR team's point of view ("your side" vs
+"the opposition"), set by "coachingTeam". Coach only that side. When the
+opposition has the ball, make it about defending: shape, pressing triggers,
+covering the danger, and winning the ball back. When your side has the ball,
+make it about keeping and advancing it. Never give the opponent instructions.
+
 Sound like a real coach speaking during a stoppage: urgent, calm, and specific.
 Return only 4 to 6 short sentences and stay under 100 words. Use no headings,
 preamble, bullet list, or metric dump. Briefly read the moment, give direct
