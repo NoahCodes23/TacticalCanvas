@@ -474,6 +474,20 @@ def match_stats(t_sec: float) -> dict:
     return {"home": _empty_stats(), "away": _empty_stats()}
 
 
+# Nominal loop length for the synthetic fallback (no real tracking loaded), so
+# the dashboard scrub bar still has a usable range when running mouse-only.
+_SYNTHETIC_DURATION = 120.0
+
+
+def duration_seconds() -> float:
+    """Replay length of the active match, in seconds. The clock loops at this
+    boundary (see MatchTracks._frame_at); the scrub bar spans exactly one loop."""
+    _ensure_initialized()
+    if _current is not None:
+        return _current.duration
+    return _SYNTHETIC_DURATION
+
+
 def _synthetic_players() -> list[Player]:
     players: list[Player] = []
     for x, y, num in _HOME_FORMATION:
