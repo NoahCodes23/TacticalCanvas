@@ -243,6 +243,18 @@
     .demo-grid button:first-child { grid-column: 1 / -1; border-color: #a16207; }
     .lab-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
     .lab-actions button { margin: 0; padding: 7px 8px; font-size: 10px; text-align: center; }
+
+    /* Playback scrub + transport. Works against the video when a clip is
+       attached, and against the server clock otherwise. */
+    #scrub { width: 100%; margin: 2px 0 3px; accent-color: #2563eb; cursor: pointer; }
+    #scrub:disabled { cursor: not-allowed; opacity: .4; }
+    #scrub-times { display: flex; justify-content: space-between; margin-bottom: 8px;
+                   font: 10px ui-monospace, monospace; color: #7d8fa1; }
+    .pb-row { display: grid; gap: 5px; margin-bottom: 6px; }
+    .pb-skip { grid-template-columns: 1fr 1fr; }
+    .pb-rate { grid-template-columns: 1fr auto 1fr; }
+    .pb-row button { margin: 0; padding: 7px 8px; font-size: 11px; text-align: center; }
+    #rate-val { min-width: 46px; font-weight: 700; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -296,6 +308,18 @@
 
       <h2>Playback</h2>
       <button id="play" class="primary">⏸ Pause &amp; Edit</button>
+      <input id="scrub" type="range" min="0" max="4000" value="0" step="1"
+             aria-label="Seek to a moment in the match">
+      <div id="scrub-times"><span id="scrub-cur">0:00</span><span id="scrub-dur">0:00</span></div>
+      <div class="pb-row pb-skip">
+        <button id="seek-back" title="Jump back 10 seconds">− 10s</button>
+        <button id="seek-fwd" title="Jump forward 10 seconds">+ 10s</button>
+      </div>
+      <div class="pb-row pb-rate">
+        <button id="rate-down" title="Slow down">Slower</button>
+        <button id="rate-val" title="Reset to normal speed">1×</button>
+        <button id="rate-up" title="Speed up">Faster</button>
+      </div>
       <button id="reset">↺ Reset scenario</button>
 
       <h2>Voice coach</h2>
@@ -424,10 +448,12 @@
         fingertips at all times. Brief tracking gaps are tolerated, and a nearby piece
         snaps to the pinch when the cursor is about one piece-width away. Grabbing
         auto-pauses.<br><br>
-        <b>Draw:</b> while paused, face your palm toward the camera and hold your
-        straight index and middle fingers together. Move the yellow pen cursor, then
-        separate or lower the fingers to finish the stroke with an arrowhead. Drawings
-        clear when playback resumes.<br><br>
+        <b>Draw:</b> while paused, hold your extended index and middle fingertips
+        together, with either side of the hand facing the camera. Move the red pen
+        cursor to paint freehand lines, circles, or shapes. Separate or lower the
+        fingers to end one stroke. Hold index, middle, and ring together to erase
+        wherever the white eraser passes. Hold all five fingers open briefly to clear
+        every drawing. Drawings also clear when playback resumes.<br><br>
         <b>Mouse:</b> drag players on this pitch — always works, camera or not.<br><br>
         <b>Calibrate:</b> open the projector on the field, then press <b>Calibrate field</b>.
         Keep the camera and projector still while all six field markers are collected.
@@ -541,6 +567,122 @@
     conn.connect();
 
     const $ = (id) => document.getElementById(id);
+
+    // ---------------------------------------------------------------------
+    // Playback transport (scrub bar, ±10s, speed).
+    //
+    // One clock, two masters. When a clip is attached the <video> element is
+    // authoritative -- so seek/rate drive it, and its frame callback pipes the
+    // new time back to the server (see the sync block above). With no clip the
+    // server owns the clock, and the same controls send SEEK_TO / rate commands.
+    // The projector follows the server either way, so nothing here touches it.
+    // ---------------------------------------------------------------------
+    const RATE_STEPS = [0.25, 0.5, 1, 1.5, 2, 4];
+    // Optimistic seek target for the server clock, held briefly so back-to-back
+    // ±10s clicks chain instead of colliding on the lagging echo. Unused when a
+    // video drives the clock (vidEl.currentTime updates synchronously).
+    let pendingSeek = null;
+    let pendingRate = null;
+    const PENDING_SEEK_MS = 320;
+    const nearestRateIndex = (r) => {
+      let best = 0, bestD = Infinity;
+      RATE_STEPS.forEach((v, i) => { const d = Math.abs(v - r); if (d < bestD) { bestD = d; best = i; } });
+      return best;
+    };
+    const fmtClock = (ms) => {
+      const s = Math.max(0, Math.floor((ms || 0) / 1000));
+      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    };
+    const clock = {
+      get durationMs() {
+        if (hasVideo) return (isFinite(vidEl.duration) ? vidEl.duration : 0) * 1000;
+        return state?.durationMs || 0;
+      },
+      get currentMs() {
+        return hasVideo ? (vidEl.currentTime || 0) * 1000 : (state?.mediaTimeMs || 0);
+      },
+      // Position within one loop, for the scrub thumb. The server clock counts
+      // up without wrapping (only the frame lookup wraps), so fold it here.
+      get positionMs() {
+        const dur = this.durationMs;
+        if (hasVideo || dur <= 0) return this.currentMs;
+        if (pendingSeek && performance.now() - pendingSeek.at < PENDING_SEEK_MS) {
+          return pendingSeek.ms;
+        }
+        return this.currentMs % dur;
+      },
+      get rate() {
+        if (hasVideo) return vidEl.playbackRate || 1;
+        if (pendingRate && performance.now() - pendingRate.at < PENDING_SEEK_MS) return pendingRate.v;
+        return state?.playbackRate || 1;
+      },
+      seekMs(ms) {
+        const dur = this.durationMs;
+        const clamped = Math.max(0, dur > 0 ? Math.min(ms, dur - 1) : ms);
+        if (hasVideo) {
+          vidEl.currentTime = clamped / 1000;
+        } else {
+          conn.send("SEEK_TO", { mediaTimeMs: clamped });
+          // Optimistic target: the server's echo is a few frames behind, so a
+          // second click before it lands would otherwise re-read the old time
+          // and collapse two jumps into one. Chain off this instead until the
+          // echo catches up (see positionMs).
+          pendingSeek = { ms: clamped, at: performance.now() };
+        }
+      },
+      nudge(deltaMs) { this.seekMs(this.positionMs + deltaMs); },
+      setRate(r) {
+        const clamped = Math.max(0.1, Math.min(r, 4));
+        if (hasVideo) {
+          vidEl.playbackRate = clamped;
+        } else {
+          conn.send("SET_PLAYBACK_RATE", { rate: clamped });
+          pendingRate = { v: clamped, at: performance.now() };  // chain rapid clicks; see rate getter
+        }
+      },
+    };
+
+    const scrub = $("scrub");
+    // While the coach is dragging the thumb (or nudging it by keyboard), stop
+    // the render loop writing state back into it -- otherwise the two fight and
+    // the thumb jitters. A short release delay lets the seeked state land first.
+    let scrubHeld = false;
+    let scrubReleaseTimer = null;
+    const seekFromScrub = () => {
+      const dur = clock.durationMs;
+      if (dur > 0) clock.seekMs((scrub.value / scrub.max) * dur);
+    };
+    scrub.addEventListener("input", () => { scrubHeld = true; seekFromScrub(); });
+    scrub.addEventListener("change", () => {
+      seekFromScrub();
+      clearTimeout(scrubReleaseTimer);
+      scrubReleaseTimer = setTimeout(() => { scrubHeld = false; }, 250);
+    });
+    $("seek-back").onclick = () => clock.nudge(-10000);
+    $("seek-fwd").onclick = () => clock.nudge(10000);
+    $("rate-down").onclick = () => clock.setRate(RATE_STEPS[Math.max(0, nearestRateIndex(clock.rate) - 1)]);
+    $("rate-up").onclick = () =>
+      clock.setRate(RATE_STEPS[Math.min(RATE_STEPS.length - 1, nearestRateIndex(clock.rate) + 1)]);
+    $("rate-val").onclick = () => clock.setRate(1);
+
+    function renderTransport() {
+      const dur = clock.durationMs;
+      const seekable = dur > 0;
+      scrub.disabled = !seekable;
+      $("seek-back").disabled = !seekable;
+      $("seek-fwd").disabled = !seekable;
+      if (seekable && !scrubHeld) {
+        scrub.value = Math.round((clock.positionMs / dur) * scrub.max);
+      }
+      $("scrub-cur").textContent = fmtClock(clock.positionMs);
+      $("scrub-dur").textContent = fmtClock(dur);
+      const rate = clock.rate;
+      const idx = nearestRateIndex(rate);
+      $("rate-val").textContent = `${+rate.toFixed(2)}×`;
+      $("rate-val").classList.toggle("primary", Math.abs(rate - 1) > 0.01);
+      $("rate-down").disabled = idx === 0;
+      $("rate-up").disabled = idx === RATE_STEPS.length - 1;
+    }
     let coachBusy = false;
     let coachResultKey = "";
 
@@ -1063,6 +1205,7 @@
       $("d-recon").textContent = conn.reconnects;
       $("d-fps").textContent = renderer.fps.toFixed(0);
       $("d-render").textContent = `${renderer.quality} / ${renderer.renderResolution.toFixed(2)}x`;
+      renderTransport();
       if (!state) return;
 
       renderMatches();

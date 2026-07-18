@@ -513,6 +513,23 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
             return
         playing_val = p.get("playing")
         state.set_playback_time(mt, playing_val if isinstance(playing_val, bool) else None)
+    elif t == "SEEK_TO":
+        try:
+            mt = float(p.get("mediaTimeMs", 0.0))
+        except (TypeError, ValueError):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"bad mediaTimeMs {p.get('mediaTimeMs')!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+        state.seek_to(mt)
+    elif t == "SET_PLAYBACK_RATE":
+        try:
+            state.set_playback_rate(float(p.get("rate", 1.0)))
+        except (TypeError, ValueError):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"bad rate {p.get('rate')!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
     elif t == "ENTER_EDIT_MODE":
         state.enter_edit_mode()
     elif t == "EXIT_EDIT_MODE":
