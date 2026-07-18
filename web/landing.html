@@ -17,7 +17,11 @@
 
     /* Drop zone. Grows the dashed border and swaps the tint when a file is
        being dragged over it -- the whole card is the target, not just the icon. */
-    #drop { position: relative; border: 2px dashed #2a3947; border-radius: 14px;
+    /* display:block is load-bearing -- a <label> is inline by default, which
+       ignores the vertical padding and fragments this dashed border across
+       line boxes instead of drawing one card. */
+    #drop { display: block; position: relative;
+            border: 2px dashed #2a3947; border-radius: 14px;
             padding: 44px 28px; text-align: center; background: #0d141b;
             transition: border-color .12s, background .12s; cursor: pointer; }
     #drop.hover { border-color: #38bdf8; background: #0f1c26; }
