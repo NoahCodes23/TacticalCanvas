@@ -1,0 +1,222 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>TacticalCanvas</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #0a0f14; color: #e6edf3;
+                 font-family: system-ui, -apple-system, sans-serif; }
+    body { display: grid; place-items: center; padding: 40px; }
+
+    main { width: 100%; max-width: 780px; }
+    h1 { font-size: 34px; margin: 0 0 4px; letter-spacing: -0.01em; }
+    h1 span { color: #38bdf8; }
+    .sub { color: #7d8fa1; font-size: 14px; margin-bottom: 32px; }
+
+    /* Drop zone. Grows the dashed border and swaps the tint when a file is
+       being dragged over it -- the whole card is the target, not just the icon. */
+    #drop { position: relative; border: 2px dashed #2a3947; border-radius: 14px;
+            padding: 44px 28px; text-align: center; background: #0d141b;
+            transition: border-color .12s, background .12s; cursor: pointer; }
+    #drop.hover { border-color: #38bdf8; background: #0f1c26; }
+    #drop.busy { pointer-events: none; opacity: .7; }
+    #drop .icon { font-size: 40px; line-height: 1; margin-bottom: 12px; color: #38bdf8; }
+    #drop .title { font-size: 17px; font-weight: 600; margin-bottom: 4px; }
+    #drop .hint { color: #7d8fa1; font-size: 13px; }
+    #drop input { display: none; }
+
+    /* Progress bar shown during upload; the bar fills based on XHR progress
+       events so the coach knows a big replay hasn't stalled. */
+    #progress { margin-top: 18px; display: none; }
+    #progress.on { display: block; }
+    #progress .bar { height: 6px; background: #1e2a35; border-radius: 3px; overflow: hidden; }
+    #progress .fill { height: 100%; width: 0%; background: #38bdf8; transition: width .1s; }
+    #progress .meta { font: 12px ui-monospace, monospace; color: #7d8fa1; margin-top: 6px;
+                      display: flex; justify-content: space-between; }
+    #err { color: #f87171; margin-top: 12px; font-size: 13px; display: none; }
+    #err.on { display: block; }
+
+    section { margin-top: 32px; }
+    h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .12em;
+         color: #7d8fa1; margin: 0 0 10px; font-weight: 600; }
+
+    /* Two lists side-by-side: any previously-uploaded clips, and the prepared
+       Metrica matches. Same styling; clicking either takes you to the
+       dashboard with that video/match preselected. */
+    .lists { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li a { display: flex; justify-content: space-between; align-items: center;
+           padding: 9px 12px; margin-bottom: 6px; border-radius: 6px;
+           background: #16212c; border: 1px solid #2a3947; color: #e6edf3;
+           text-decoration: none; font-size: 13px; }
+    li a:hover { background: #1e2b38; border-color: #3a4c5e; }
+    li a .m { font: 11px ui-monospace, monospace; color: #7d8fa1; }
+    .empty { color: #556472; font-size: 12px; font-style: italic; padding: 4px 2px; }
+
+    .footer { margin-top: 40px; text-align: center; color: #556472; font-size: 12px; }
+    .footer a { color: #7d8fa1; text-decoration: none; }
+    .footer a:hover { color: #e6edf3; }
+    .skip { display: inline-block; margin-top: 14px; padding: 8px 16px;
+            border: 1px solid #2a3947; border-radius: 6px; background: transparent;
+            color: #7d8fa1; text-decoration: none; font-size: 13px; }
+    .skip:hover { color: #e6edf3; border-color: #3a4c5e; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tactical<span>Canvas</span></h1>
+    <div class="sub">Drop a match replay to sync it with tracking data on the tactical board.</div>
+
+    <label id="drop">
+      <input type="file" id="file" accept="video/*">
+      <div class="icon">⤓</div>
+      <div class="title">Drop a video here, or click to choose</div>
+      <div class="hint">.mp4 / .mov / .webm · replays play back synced to the pitch</div>
+    </label>
+
+    <div id="progress">
+      <div class="bar"><div class="fill" id="fill"></div></div>
+      <div class="meta"><span id="pName">—</span><span id="pPct">0%</span></div>
+    </div>
+    <div id="err"></div>
+
+    <section>
+      <div class="lists">
+        <div>
+          <h2>Previously uploaded</h2>
+          <ul id="uploads"><li class="empty">Loading…</li></ul>
+        </div>
+        <div>
+          <h2>Or pick a demo match</h2>
+          <ul id="matches"><li class="empty">Loading…</li></ul>
+        </div>
+      </div>
+    </section>
+
+    <div class="footer">
+      <a class="skip" href="/dashboard">Skip → open dashboard</a>
+    </div>
+  </main>
+
+  <script>
+    const drop = document.getElementById("drop");
+    const file = document.getElementById("file");
+    const prog = document.getElementById("progress");
+    const fill = document.getElementById("fill");
+    const pName = document.getElementById("pName");
+    const pPct = document.getElementById("pPct");
+    const err = document.getElementById("err");
+
+    // Drag events must be captured on the whole document so the browser doesn't
+    // eat the drop and try to navigate to the file. The visual highlight is
+    // still scoped to the drop-zone element.
+    ["dragenter", "dragover"].forEach((ev) =>
+      document.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("hover"); }));
+    ["dragleave", "drop"].forEach((ev) =>
+      document.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("hover"); }));
+    document.addEventListener("drop", (e) => {
+      if (e.target.closest("a")) return;  // don't hijack drops on link items
+      const f = e.dataTransfer?.files?.[0];
+      if (f) upload(f);
+    });
+    file.addEventListener("change", () => { if (file.files[0]) upload(file.files[0]); });
+
+    function showError(msg) { err.textContent = msg; err.classList.add("on"); }
+    function hideError() { err.classList.remove("on"); }
+
+    function upload(f) {
+      hideError();
+      if (!f.type.startsWith("video/") && !/\.(mp4|mov|webm|mkv)$/i.test(f.name)) {
+        showError(`Not a video file: ${f.name}`);
+        return;
+      }
+      drop.classList.add("busy");
+      prog.classList.add("on");
+      pName.textContent = f.name;
+      pPct.textContent = "0%";
+      fill.style.width = "0%";
+
+      // Raw-body PUT keeps the server dependency-free (no python-multipart
+      // needed). Filename is in the URL; server sanitises + de-dupes it.
+      const url = `/upload?name=${encodeURIComponent(f.name)}`;
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", url);
+      xhr.upload.onprogress = (e) => {
+        if (!e.lengthComputable) return;
+        const pct = Math.round((e.loaded / e.total) * 100);
+        fill.style.width = pct + "%";
+        pPct.textContent = pct + "%";
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const r = JSON.parse(xhr.responseText);
+            window.location.href = `/dashboard?video=${encodeURIComponent(r.name)}`;
+          } catch (e) { showError("Upload succeeded but response was malformed."); reset(); }
+        } else {
+          showError(`Upload failed (${xhr.status}): ${xhr.responseText || "no message"}`);
+          reset();
+        }
+      };
+      xhr.onerror = () => { showError("Upload failed: network error"); reset(); };
+      xhr.send(f);
+    }
+    function reset() { drop.classList.remove("busy"); prog.classList.remove("on"); }
+
+    // Populate the two side-lists from the server so the landing page reflects
+    // whatever the backend can actually offer right now.
+    async function loadLists() {
+      try {
+        const [ups, matches] = await Promise.all([
+          fetch("/api/uploads").then((r) => r.json()),
+          fetch("/api/matches").then((r) => r.json()),
+        ]);
+        renderUploads(ups.items || []);
+        renderMatches(matches.items || []);
+      } catch (e) {
+        renderUploads([]); renderMatches([]);
+      }
+    }
+    function fmtSize(b) {
+      if (b < 1024) return b + " B";
+      if (b < 1e6) return (b / 1024).toFixed(0) + " KB";
+      return (b / 1e6).toFixed(1) + " MB";
+    }
+    function renderUploads(items) {
+      const ul = document.getElementById("uploads");
+      ul.innerHTML = "";
+      if (!items.length) {
+        ul.innerHTML = '<li class="empty">No uploads yet.</li>';
+        return;
+      }
+      for (const it of items) {
+        const li = document.createElement("li");
+        const a = document.createElement("a");
+        a.href = `/dashboard?video=${encodeURIComponent(it.name)}`;
+        a.innerHTML = `<span>${it.name}</span><span class="m">${fmtSize(it.size)}</span>`;
+        li.appendChild(a);
+        ul.appendChild(li);
+      }
+    }
+    function renderMatches(items) {
+      const ul = document.getElementById("matches");
+      ul.innerHTML = "";
+      if (!items.length) {
+        ul.innerHTML = '<li class="empty">No prepared matches. Run <code>tools/prepare_match</code>.</li>';
+        return;
+      }
+      for (const it of items) {
+        const li = document.createElement("li");
+        const a = document.createElement("a");
+        a.href = `/dashboard?match=${encodeURIComponent(it.id)}`;
+        a.innerHTML = `<span>${it.label}</span><span class="m">${it.id}</span>`;
+        li.appendChild(a);
+        ul.appendChild(li);
+      }
+    }
+    loadLists();
+  </script>
+</body>
+</html>

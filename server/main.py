@@ -3,17 +3,27 @@ import contextlib
 import multiprocessing
 import os
 import queue as queue_mod
+import re
 import time
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import match_data
 from .protocol import PROTOCOL_VERSION, Envelope, server_message
 from .state import AppState, now_ms
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIR = os.path.join(ROOT, "web")
+UPLOAD_DIR = os.path.join(ROOT, "data", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Cap uploads at 2 GB. A full-match broadcast at H.264 is ~1.2 GB; anything
+# larger is almost certainly a mistake and would eat the FastAPI worker's
+# memory as we stream it to disk.
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
 
 TICK_HZ = 60
 BROADCAST_EVERY = 2  # -> 30Hz snapshots; the clients interpolate between them
@@ -112,7 +122,7 @@ app = FastAPI(title="TacticalCanvas", lifespan=lifespan)
 
 @app.get("/")
 async def index():
-    return RedirectResponse("/dashboard")
+    return FileResponse(os.path.join(WEB_DIR, "landing.html"))
 
 
 @app.get("/dashboard")
@@ -123,6 +133,97 @@ async def dashboard():
 @app.get("/projector")
 async def projector():
     return FileResponse(os.path.join(WEB_DIR, "projector.html"))
+
+
+# --------------------------------------------------------------------------- #
+# uploads: raw-body PUT so we don't depend on python-multipart
+# --------------------------------------------------------------------------- #
+def _safe_upload_name(raw: str) -> str:
+    """Turn an arbitrary client-supplied filename into something safe on disk.
+    Strips paths, collapses odd characters, keeps a video extension we allow."""
+    base = os.path.basename(raw or "").strip() or "video"
+    stem, ext = os.path.splitext(base)
+    ext = ext.lower()
+    if ext not in ALLOWED_VIDEO_EXTS:
+        ext = ".mp4"
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "video"
+    return f"{stem[:80]}{ext}"
+
+
+def _dedupe_name(name: str) -> str:
+    """If `name` already exists in uploads/, append -1, -2, ... until it doesn't."""
+    stem, ext = os.path.splitext(name)
+    i = 0
+    candidate = name
+    while os.path.exists(os.path.join(UPLOAD_DIR, candidate)):
+        i += 1
+        candidate = f"{stem}-{i}{ext}"
+    return candidate
+
+
+@app.put("/upload")
+async def upload(request: Request, name: str = "video.mp4"):
+    """Streaming PUT: writes the raw request body straight to data/uploads/.
+    The client supplies the display filename via `?name=`; we sanitise it and
+    de-duplicate so parallel uploads don't clobber each other."""
+    safe = _dedupe_name(_safe_upload_name(name))
+    path = os.path.join(UPLOAD_DIR, safe)
+    total = 0
+    try:
+        with open(path, "wb") as f:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    f.close()
+                    os.unlink(path)
+                    raise HTTPException(413, "file too large (>2 GB)")
+                f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up the half-written file so the uploads list stays honest.
+        if os.path.exists(path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        raise HTTPException(500, f"upload failed: {e}") from e
+    return JSONResponse({"name": safe, "size": total, "url": f"/uploads/{safe}"})
+
+
+@app.get("/api/uploads")
+async def list_uploads():
+    items = []
+    for entry in sorted(os.listdir(UPLOAD_DIR)):
+        p = os.path.join(UPLOAD_DIR, entry)
+        if not os.path.isfile(p):
+            continue
+        if os.path.splitext(entry)[1].lower() not in ALLOWED_VIDEO_EXTS:
+            continue
+        items.append({"name": entry, "size": os.path.getsize(p)})
+    # Newest first so a fresh upload floats to the top of the landing list.
+    items.sort(key=lambda it: os.path.getmtime(os.path.join(UPLOAD_DIR, it["name"])),
+               reverse=True)
+    return {"items": items}
+
+
+@app.get("/api/matches")
+async def list_prepared_matches():
+    return {"items": match_data.list_matches()}
+
+
+@app.get("/uploads/{name}")
+async def get_upload(name: str):
+    # Reject anything that isn't a plain filename in our upload dir; blocks
+    # ../ traversal without needing to normalise.
+    if name != os.path.basename(name) or name.startswith("."):
+        raise HTTPException(400, "bad filename")
+    path = os.path.join(UPLOAD_DIR, name)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "not found")
+    # FileResponse handles Range requests, which the <video> element uses to
+    # seek without downloading the whole clip.
+    return FileResponse(path)
 
 
 @app.websocket("/ws")
@@ -170,6 +271,21 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
 
     if t == "SET_PLAYING":
         state.set_playing(bool(p.get("playing", True)))
+    elif t == "SET_PLAYBACK_TIME":
+        # Fires many times a second from the video's frame callback. We still
+        # broadcast a snapshot each call (matches every other command) --
+        # snapshots are already gated by BROADCAST_EVERY in tick_loop, but here
+        # we get one per command which is what keeps overlays glued to the
+        # video frame the coach is actually looking at.
+        try:
+            mt = float(p.get("mediaTimeMs", 0.0))
+        except (TypeError, ValueError):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"bad mediaTimeMs {p.get('mediaTimeMs')!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+        playing_val = p.get("playing")
+        state.set_playback_time(mt, playing_val if isinstance(playing_val, bool) else None)
     elif t == "ENTER_EDIT_MODE":
         state.enter_edit_mode()
     elif t == "EXIT_EDIT_MODE":

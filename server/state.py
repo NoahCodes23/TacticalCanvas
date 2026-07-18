@@ -16,6 +16,12 @@ POSSESSION_MARGIN_M = 1.5
 SHADOW_SECONDS_MIN = 0.5
 SHADOW_SECONDS_MAX = 4.0
 
+# When the dashboard has a video attached it drives the clock via
+# SET_PLAYBACK_TIME on every displayed frame. If we've heard one within this
+# window we treat the video as the master and stop auto-advancing in tick();
+# after the window we assume the video is gone and take back the clock.
+EXTERNAL_CLOCK_STALE_MS = 500.0
+
 
 def now_ms() -> float:
     return time.time() * 1000.0
@@ -31,6 +37,9 @@ class AppState:
         self.playback_rate = 1.0
         self.frame_index = 0
         self.media_time_ms = 0.0
+        # Wall-clock ms of the last SET_PLAYBACK_TIME. 0 means never; the
+        # server owns the clock until a video says otherwise.
+        self.external_clock_last_ms = 0.0
 
         self.edit_mode = False
         self.calibration_overlay = False
@@ -81,12 +90,24 @@ class AppState:
         return best
 
     def tick(self, dt: float) -> None:
-        if self.playing and not self.edit_mode:
-            self.media_time_ms += dt * 1000.0 * self.playback_rate
-            self.frame_index = int(self.media_time_ms / 40.0)  # 25Hz tracking data
-            t = self.media_time_ms / 1000.0
-            match_data.advance(self.players, t)
-            self.ball = match_data.ball_position(t)
+        video_driven = (
+            self.external_clock_last_ms > 0
+            and now_ms() - self.external_clock_last_ms < EXTERNAL_CLOCK_STALE_MS
+        )
+        if not self.edit_mode:
+            if video_driven:
+                # Time already came in on the last SET_PLAYBACK_TIME; just
+                # refresh the world at that pinned instant so pitch control,
+                # shadows etc. reflect the video's *current* frame.
+                t = self.media_time_ms / 1000.0
+                match_data.advance(self.players, t)
+                self.ball = match_data.ball_position(t)
+            elif self.playing:
+                self.media_time_ms += dt * 1000.0 * self.playback_rate
+                self.frame_index = int(self.media_time_ms / 40.0)  # 25Hz tracking data
+                t = self.media_time_ms / 1000.0
+                match_data.advance(self.players, t)
+                self.ball = match_data.ball_position(t)
         # Runs while paused too, so dragging a player in edit mode can hand
         # possession over and flip which team the shadows are drawn for.
         self._update_possession()
@@ -130,6 +151,25 @@ class AppState:
         if playing:
             self.edit_mode = False
             self.grabbed.clear()
+        self._bump()
+
+    def set_playback_time(self, media_time_ms: float, playing: bool | None = None) -> None:
+        """Video says 'we're now at this displayed frame'. Pin the tracking
+        clock to it and, if the caller told us, mirror its play/pause state
+        (so a coach hitting space in the video also freezes the pitch)."""
+        self.media_time_ms = max(0.0, float(media_time_ms))
+        self.frame_index = int(self.media_time_ms / 40.0)
+        self.external_clock_last_ms = now_ms()
+        if playing is not None:
+            was_playing = self.playing
+            self.playing = bool(playing)
+            # Coming out of edit mode by pressing play in the video is the same
+            # gesture as pressing Resume in the sidebar -- drop the freeze.
+            if self.playing and self.edit_mode:
+                self.edit_mode = False
+                self.grabbed.clear()
+            if was_playing != self.playing:
+                self._bump()
         self._bump()
 
     def reset_scenario(self) -> None:
