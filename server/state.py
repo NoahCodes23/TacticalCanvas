@@ -2,6 +2,7 @@ import math
 import time
 
 from . import match_data
+from .analytics.formation import detect_formation
 from .analytics.reach import reach_polygon
 from .match_data import PITCH_LENGTH, PITCH_WIDTH, Player
 
@@ -37,6 +38,7 @@ class AppState:
         self.compactness_overlay = False
         self.shadow_overlay = False
         self.pitch_control_overlay = False
+        self.formation_overlay = False
         self.shadow_seconds = 2.0
         self.possession = "home"
 
@@ -154,6 +156,7 @@ class AppState:
         self.compactness_overlay = False
         self.shadow_overlay = False
         self.pitch_control_overlay = False
+        self.formation_overlay = False
         self.playing = True
         self.media_time_ms = 0.0
         self.frame_index = 0
@@ -180,6 +183,36 @@ class AppState:
     def toggle_pitch_control(self) -> None:
         self.pitch_control_overlay = not self.pitch_control_overlay
         self._bump()
+
+    def toggle_formation(self) -> None:
+        self.formation_overlay = not self.formation_overlay
+        self._bump()
+
+    def team_formations(self) -> dict:
+        """{home: "4-3-3", away: "4-4-2"} or empty strings when unknown. Runs
+        only when the overlay is on; each side inferred from that team's own
+        centroid so it stays correct after half-time flips direction."""
+        if not self.formation_overlay:
+            return {"home": "", "away": ""}
+        home = [p for p in self.players if p.team == "home"]
+        away = [p for p in self.players if p.team == "away"]
+        if not home or not away:
+            return {"home": "", "away": ""}
+        home_defends_left = (
+            sum(p.x for p in home) / len(home) < sum(p.x for p in away) / len(away)
+        )
+
+        def formation_of(team_players: list, defends_left: bool) -> str:
+            if len(team_players) < 7:
+                return ""
+            depth = (lambda p: p.x) if defends_left else (lambda p: PITCH_LENGTH - p.x)
+            outfield = sorted(team_players, key=depth)[1:]   # drop GK (deepest)
+            return detect_formation([depth(p) for p in outfield])
+
+        return {
+            "home": formation_of(home, home_defends_left),
+            "away": formation_of(away, not home_defends_left),
+        }
 
     def set_shadow_seconds(self, seconds: float) -> None:
         self.shadow_seconds = min(max(float(seconds), SHADOW_SECONDS_MIN), SHADOW_SECONDS_MAX)
@@ -296,6 +329,8 @@ class AppState:
             "compactnessOverlay": self.compactness_overlay,
             "shadowOverlay": self.shadow_overlay,
             "pitchControlOverlay": self.pitch_control_overlay,
+            "formationOverlay": self.formation_overlay,
+            "formations": self.team_formations(),
             "shadowSeconds": self.shadow_seconds,
             "possession": self.possession,
             "shadows": self.defender_shadows(),
