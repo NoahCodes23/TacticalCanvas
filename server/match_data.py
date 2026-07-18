@@ -19,6 +19,15 @@ import numpy as np
 PITCH_LENGTH = 105.0
 PITCH_WIDTH = 68.0
 
+# Penalty area: 16.5m deep, 40.32m wide, centred on the goal.
+BOX_DEPTH = 16.5
+BOX_Y_MIN = PITCH_WIDTH / 2 - 20.16
+BOX_Y_MAX = PITCH_WIDTH / 2 + 20.16
+
+# Event types that mean a player actually played the ball. Cards and fouls
+# carry a position but aren't touches.
+_TOUCH_TYPES = {"PASS", "SHOT", "RECOVERY", "BALL LOST", "CHALLENGE", "SET PIECE", "CARRY"}
+
 _ROOT = Path(__file__).resolve().parent.parent
 _CACHE_DIR = _ROOT / "cache"
 
@@ -124,6 +133,7 @@ def _format_event(e: dict) -> dict:
 
 def _empty_stats() -> dict:
     return {
+        "goals": 0,
         "passesCompleted": 0,
         "passes": 0,
         "touchesInBox": 0,
@@ -167,6 +177,7 @@ class MatchTracks:
         self._raw_events = raw
         self.events = [_format_event(e) for e in raw]
         self._event_times = [e["t"] for e in self.events]
+        self._attack_dir: np.ndarray | None = None  # built on first stats call
 
     @classmethod
     def load(cls, path: Path, match_id: str) -> "MatchTracks":
@@ -249,6 +260,52 @@ class MatchTracks:
         i = bisect.bisect_right(self._event_times, t)
         return list(reversed(self.events[max(0, i - limit):i]))
 
+    def _home_attacks_positive(self) -> np.ndarray:
+        """Per-frame boolean: is the home team attacking towards +x?
+
+        Metrica does not flip coordinates at half time, and the .npz carries no
+        period column, so any fixed direction is wrong for one half of every
+        match. Derive it from the shape instead: the team defending the left
+        goal keeps its back line low, so the side with the *lower* centroid x is
+        the one attacking +x. Averaged over a minute, a counter-attack can't
+        flip the sign, but the half-time swap still shows up cleanly.
+        """
+        if self._attack_dir is not None:
+            return self._attack_dir
+
+        home_cols = self.player_teams == 0
+        away_cols = self.player_teams == 1
+        if not home_cols.any() or not away_cols.any():
+            self._attack_dir = np.ones(self.n_frames, dtype=bool)
+            return self._attack_dir
+
+        d = (self.positions[:, home_cols, 0].mean(axis=1)
+             - self.positions[:, away_cols, 0].mean(axis=1))
+
+        # Centred moving average via cumsum -- O(frames), not O(frames*window).
+        w = max(1, int(60 * self.fps))
+        c = np.concatenate([[0.0], np.cumsum(d, dtype=np.float64)])
+        idx = np.arange(d.size)
+        lo = np.maximum(0, idx - w // 2)
+        hi = np.minimum(d.size, idx + w // 2 + 1)
+        self._attack_dir = (c[hi] - c[lo]) / (hi - lo) < 0
+        return self._attack_dir
+
+    def _in_opponent_box(self, t_ev: float, team: str) -> bool:
+        """Was the ball inside the opponent's penalty area at this event?
+
+        The prepared events carry no coordinates, so use the tracking ball
+        position at the event's frame -- which is where the touch happened.
+        """
+        f = self._frame_at(t_ev)
+        bx = float(self.ball_positions[f, 0])
+        by = float(self.ball_positions[f, 1])
+        if not (BOX_Y_MIN <= by <= BOX_Y_MAX):
+            return False
+        home_positive = bool(self._home_attacks_positive()[f])
+        attacks_positive = home_positive if team == "home" else not home_positive
+        return bx >= PITCH_LENGTH - BOX_DEPTH if attacks_positive else bx <= BOX_DEPTH
+
     def stats_upto(self, t_sec: float) -> dict:
         """Aggregate match stats up to the current replay clock."""
         if not self.events:
@@ -257,30 +314,27 @@ class MatchTracks:
         i = bisect.bisect_right(self._event_times, t)
         home = _empty_stats()
         away = _empty_stats()
-        for ev in self.events[:i]:
-            bucket = home if ev.get("team", "home") == "home" else away
+        # self.events and self._raw_events are parallel and share a sort order,
+        # so one bisect on the formatted times indexes both.
+        for ev, raw_ev in zip(self.events[:i], self._raw_events[:i]):
+            team = ev.get("team", "home")
+            bucket = home if team == "home" else away
             label = ev.get("label", "")
-            if label in ("Pass", "Cross"):
+            if label == "GOAL":
+                bucket["goals"] += 1
+            elif label in ("Pass", "Cross"):
                 bucket["passes"] += 1
-                bucket["passesCompleted"] += 1
             elif label == "Corner":
                 bucket["corners"] += 1
             elif label == "Throw-in":
                 bucket["throws"] += 1
-        # Scan raw events for offsides and touches in opponent box
-        for raw_ev in self._raw_events[:i]:
-            t_ev = float(raw_ev.get("t", 0.0))
-            if t_ev > t:
-                break
-            team = raw_ev.get("team", "home")
-            bucket = home if team == "home" else away
+
+            typ = (raw_ev.get("type") or "").upper()
             sub = (raw_ev.get("subtype") or "").upper()
             if "OFFSIDE" in sub:
                 bucket["offsides"] += 1
-            x = raw_ev.get("start_x")
-            if x is not None:
-                in_opp_box = (x > 88.5) if team == "home" else (x < 16.5)
-                if in_opp_box:
+            if typ in _TOUCH_TYPES and raw_ev.get("from"):
+                if self._in_opponent_box(ev["t"], team):
                     bucket["touchesInBox"] += 1
         # Estimate incomplete passes: ~12% failure rate for demo realism
         for bucket in (home, away):

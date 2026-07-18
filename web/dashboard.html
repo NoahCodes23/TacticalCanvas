@@ -254,6 +254,7 @@
       <h2>Match Stats</h2>
       <table id="match-stats">
         <tr><th></th><th style="color:#38bdf8;font-size:10px">HOME</th><th style="color:#fb7185;font-size:10px">AWAY</th></tr>
+        <tr><td>Goals</td><td id="ms-h-g">—</td><td id="ms-a-g">—</td></tr>
         <tr><td>Passes completed</td><td id="ms-h-pc">—</td><td id="ms-a-pc">—</td></tr>
         <tr><td>Passes</td><td id="ms-h-p">—</td><td id="ms-a-p">—</td></tr>
         <tr><td>Accurate passes</td><td id="ms-h-ap">—</td><td id="ms-a-ap">—</td></tr>
@@ -612,6 +613,8 @@
       const s = state?.matchStats;
       if (!s) return;
       const h = s.home, a = s.away;
+      $("ms-h-g").textContent = h.goals;
+      $("ms-a-g").textContent = a.goals;
       $("ms-h-pc").textContent = h.passesCompleted;
       $("ms-a-pc").textContent = a.passesCompleted;
       $("ms-h-p").textContent = h.passes;
