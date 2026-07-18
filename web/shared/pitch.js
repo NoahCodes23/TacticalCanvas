@@ -11,6 +11,11 @@ const COL_AI_PASS = [0xfde047, 0x4ade80, 0xc084fc];
 const COL_AI_FAINT = 0x94a3b8;
 const COL_AI_TARGET = 0x22d3ee;
 
+// Cross-fade length when possession turns over and the shadows change team.
+// Long enough to read as a deliberate handover, short enough that it has
+// finished before the coach looks for the new shape.
+const SHADOW_FADE_MS = 350;
+
 export class PitchRenderer {
   constructor(el, { showCalibration = true, quality = "sharp" } = {}) {
     this.el = el;
@@ -150,7 +155,10 @@ export class PitchRenderer {
     if (this.showCalibration && this.state?.calibrationOverlay) this._drawCalibration(g);
     // Shadows first: the offside line and the players read on top of them.
     if (this.state?.shadowOverlay) this._drawShadows(g);
-    else if (this._shadowLabel) this._shadowLabel.visible = false;
+    else {
+      this._resetShadowFade();
+      if (this._shadowLabel) this._shadowLabel.visible = false;
+    }
     if (this.state?.experiments?.receiverTargets) this._drawAiTargets(g);
     else this._hideTextPool(this._aiTargetLabels);
     if (this.state?.experiments?.passRecommendations) this._drawAiPasses(g);
@@ -314,23 +322,68 @@ export class PitchRenderer {
   // we just fill them. The fills are deliberately translucent so overlaps
   // compound into darker double-covered areas and the gaps between them stay
   // bare grass -- those gaps are the unmarked zones.
+  //
+  // Possession turning over hands the shadows from one team to the other. A
+  // hard colour swap mid-replay reads as a rendering glitch rather than as the
+  // tactical event it is, so the two sets cross-fade. The outgoing set is the
+  // last polygons that team had; it is frozen at the moment of turnover, which
+  // over a ~350ms fade is both imperceptible and the right read -- the shape
+  // they *had* dissolving as they lose the ball.
   _drawShadows(g) {
     const shadows = this.state.shadows || [];
     if (!shadows.length) return;
+    const team = shadows[0].team;
+    const step = this.app.ticker.deltaMS / SHADOW_FADE_MS;
+
+    if (this._shadowTeam == null) {
+      this._shadowTeam = team;      // first shadows since the overlay came on
+      this._shadowAlpha = 0;
+    } else if (team !== this._shadowTeam) {
+      // Snapshot whatever is on screen -- possibly itself mid-fade, if the ball
+      // changes hands twice inside one fade.
+      this._shadowOut = { shadows: this._shadowPrev, alpha: this._shadowAlpha };
+      this._shadowTeam = team;
+      this._shadowAlpha = 0;
+    }
+    this._shadowPrev = shadows;
+
+    this._shadowAlpha = Math.min(1, this._shadowAlpha + step);
+    if (this._shadowOut && (this._shadowOut.alpha -= step) <= 0) this._shadowOut = null;
+
+    if (this._shadowOut) this._drawShadowSet(g, this._shadowOut.shadows, this._shadowOut.alpha);
+    this._drawShadowSet(g, shadows, this._shadowAlpha);
+    this._shadowText(team, this._shadowAlpha);
+
+    // The overlay is otherwise only repainted when the server bumps a revision,
+    // which is far too coarse to animate against -- keep it dirty until the
+    // fade lands.
+    if (this._shadowAlpha < 1 || this._shadowOut) this.overlayDirty = true;
+  }
+
+  _drawShadowSet(g, shadows, k) {
+    if (!shadows || k <= 0) return;
+    const e = k * k * (3 - 2 * k);   // smoothstep, so neither end of the fade snaps
     for (const s of shadows) {
       if (!s.points || s.points.length < 3) continue;
       const colour = s.team === "home" ? COL_HOME : COL_AWAY;
       const flat = [];
       for (const [x, y] of s.points) flat.push(this.mx(x), this.my(y));
-      g.lineStyle(Math.max(1, this.L.scale * 0.05), colour, 0.45);
-      g.beginFill(colour, 0.15);
+      g.lineStyle(Math.max(1, this.L.scale * 0.05), colour, 0.45 * e);
+      g.beginFill(colour, 0.15 * e);
       g.drawPolygon(flat);
       g.endFill();
     }
-    this._shadowText(shadows[0].team);
   }
 
-  _shadowText(team) {
+  // Dropped when the overlay is switched off, so it fades in again next time
+  // rather than resuming half-way through whatever the last fade was doing.
+  _resetShadowFade() {
+    this._shadowTeam = null;
+    this._shadowOut = null;
+    this._shadowPrev = null;
+  }
+
+  _shadowText(team, k = 1) {
     if (!this._shadowLabel) {
       this._shadowLabel = this._makeText("", { fontFamily: "system-ui, sans-serif",
                                                 fontSize: 13, fill: 0xffffff, fontWeight: "bold" });
@@ -339,6 +392,7 @@ export class PitchRenderer {
     }
     const t = this._shadowLabel;
     t.visible = true;
+    t.alpha = k * k * (3 - 2 * k);
     t.style.fill = team === "home" ? COL_HOME : COL_AWAY;
     t.style.fontSize = Math.max(13, this.L.scale * 0.95);
     t.text = `REACH · ${(this.state.shadowSeconds ?? 2).toFixed(1)}s · ${team}`;

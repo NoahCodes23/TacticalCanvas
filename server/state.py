@@ -47,6 +47,10 @@ class AppState:
         self.pitch_control_overlay = False
         self.formation_overlay = False
         self.experiments = dict(EXPERIMENT_DEFAULTS)
+        # Sized by the shape it draws rather than the number: 2s puts a standing
+        # player's reach at ~8m, half of what the old 3s default drew. Reach is
+        # not linear in the horizon -- the acceleration phase dominates early --
+        # so halving the radius means 3.0 -> 2.0, not 3.0 -> 1.5.
         self.shadow_seconds = 2.0
         self.possession = "home"
 
