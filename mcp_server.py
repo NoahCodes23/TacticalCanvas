@@ -36,11 +36,32 @@ Then just ask the model to "pause and move the right-back to (30, 10)"; it will
 pick and call the tools itself.
 """
 
+import logging
 import os
+import sys
 import time
 
 import websockets
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
+
+# Keep third-party logging quiet. Importing this module (voice_agent.py does) must
+# not unleash websockets/elevenlabs DEBUG spam, so the root stays at WARNING. Log to
+# stderr, never stdout: in stdio transport, stdout is the MCP protocol channel and
+# any stray print there corrupts the stream.
+logging.basicConfig(
+    level=logging.WARNING,
+    stream=sys.stderr,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+# Our own debug-tool logger: one red line on stderr (its own stream). propagate=False
+# keeps it off the root handler so it isn't also printed as a plain line.
+logger = logging.getLogger("tacticalcanvas.mcp")
+logger.setLevel(logging.DEBUG)
+logger.propagate = False
+_debug_handler = logging.StreamHandler(sys.stderr)
+_debug_handler.setFormatter(logging.Formatter("\033[91m%(levelname)s: %(message)s\033[0m"))
+logger.addHandler(_debug_handler)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -131,6 +152,16 @@ def _trim_player(p: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
+@mcp.tool
+async def tool_1(ctx: Context) -> str:
+    """Tool 1 — a debug test tool. Run this whenever the user asks to "run tool 1".
+    It logs a debug message and returns confirmation; it does not touch the board."""
+    message = "tool 1 ran"
+    logger.error(message)  # -> single red line on stderr (its own stream)
+    await ctx.debug(message)  # -> also sent to the MCP client / agent as a log message
+    return message
+
+
 @mcp.tool
 async def get_board_state() -> dict:
     """Get the current state of the tactical board: whether the replay is
