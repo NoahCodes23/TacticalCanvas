@@ -28,6 +28,11 @@ CommandType = Literal[
     "SET_SHADOW_SECONDS",       # {seconds}  -- reach horizon, clamped 0.5-4.0
     "SET_EXPERIMENT",           # {name, enabled?} -- opt-in analytics feature
     "LOAD_MATCH",               # {matchId}  -- switch the active test match
+    "START_SIMULATION",         # {}  -- plan + play out the coached move
+    "PAUSE_SIMULATION",         # {}
+    "RESUME_SIMULATION",        # {}
+    "STOP_SIMULATION",          # {}  -- tear down, hand the pitch back to replay
+    "SET_SIMULATION_RATE",      # {rate}  -- sim speed, clamped 0.25-4.0
     "PING",                     # {t}  -- client clock, echoed back for RTT
 ]
 
