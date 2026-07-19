@@ -365,6 +365,8 @@
                             font-size: 16px; display: flex; align-items: center; justify-content: center;
                             background: #16352400; border: 1px solid #2a4a37; color: #d1fae5; }
     #sim-transport button:hover { background: #1c4230; }
+    #sim-transport button:disabled { opacity: .3; cursor: default; }
+    #sim-transport button:disabled:hover { background: #16352400; }
     #sim-play { background: #10b981 !important; border-color: #10b981 !important; color: #04140d !important; }
     #sim-stop { color: #fca5a5; }
     #sim-rate-wrap { display: flex; align-items: center; gap: 4px; margin-left: 4px; }
@@ -438,7 +440,9 @@
           </div>
         </div>
         <div id="sim-transport">
+          <button id="sim-step-back" title="Jump to the previous step">⏮</button>
           <button id="sim-play" title="Play / pause the simulation">⏸</button>
+          <button id="sim-step-fwd" title="Jump to the next step">⏭</button>
           <button id="sim-stop" title="Stop and return to replay">⏹</button>
           <div id="sim-rate-wrap">
             <button id="sim-rate-down">−</button>
@@ -912,6 +916,8 @@
       else conn.send("RESUME_SIMULATION");
     };
     $("sim-stop").onclick = () => conn.send("STOP_SIMULATION");
+    $("sim-step-back").onclick = () => conn.send("SIM_STEP_BACK");
+    $("sim-step-fwd").onclick = () => conn.send("SIM_STEP_FORWARD");
     const SIM_RATES = [0.25, 0.5, 1, 1.5, 2, 3];
     const stepSimRate = (dir) => {
       const cur = state?.simulation?.rate ?? 1;
@@ -940,6 +946,13 @@
       startBtn.classList.add("running");
       $("sim-play").textContent = sim.playing ? "⏸" : "▶";
       $("sim-rate").textContent = `${sim.rate}×`;
+      // Step scrubbing: back needs a previous step; forward needs the next
+      // step to have played already (the server only seeks into the recording,
+      // and after a backward seek the recording can extend past the restored
+      // forecast — maxReachedStep is that horizon).
+      const cur = sim.currentStep ?? -1;
+      $("sim-step-back").disabled = cur <= 0;
+      $("sim-step-fwd").disabled = cur + 1 > (sim.maxReachedStep ?? -1);
 
       const outcome = $("sim-outcome");
       outcome.textContent = sim.outcome ? (OUTCOME_LABEL[sim.outcome] || sim.outcome) : "";

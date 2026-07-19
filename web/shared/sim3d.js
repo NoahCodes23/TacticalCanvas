@@ -91,6 +91,11 @@ class GLSimView {
     this._buildLane();
     this._buildCarrierRing();
     this._initOrbit();
+    this._buildTooltip();
+
+    this.raycaster = new THREE.Raycaster();
+    this._mouse = { x: 0, y: 0, px: 0, py: 0, over: false };
+    this._hoverId = null;
 
     this._raf = requestAnimationFrame(() => this._frame());
   }
@@ -276,22 +281,31 @@ class GLSimView {
     this._defaultView = { yaw: 0, el: 0.72, dist: 74 };
 
     const el = this.root;
-    let dragging = false, lastX = 0, lastY = 0;
+    this._dragging = false;
+    let lastX = 0, lastY = 0;
     el.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
-      dragging = true; lastX = e.clientX; lastY = e.clientY;
+      this._dragging = true; lastX = e.clientX; lastY = e.clientY;
       el.setPointerCapture(e.pointerId);
       el.style.cursor = "grabbing";
     });
     el.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
+      // Track the pointer for hover raycasts even when not dragging.
+      const r = el.getBoundingClientRect();
+      this._mouse.px = e.clientX - r.left;
+      this._mouse.py = e.clientY - r.top;
+      this._mouse.x = (this._mouse.px / r.width) * 2 - 1;
+      this._mouse.y = -(this._mouse.py / r.height) * 2 + 1;
+      this._mouse.over = true;
+      if (!this._dragging) return;
       const dx = e.clientX - lastX, dy = e.clientY - lastY;
       lastX = e.clientX; lastY = e.clientY;
       this._orbitGoal.yaw -= dx * 0.005;
       this._orbitGoal.el = clamp(this._orbitGoal.el + dy * 0.004, 0.18, 1.38);
     });
+    el.addEventListener("pointerleave", () => { this._mouse.over = false; });
     const stop = (e) => {
-      dragging = false;
+      this._dragging = false;
       el.style.cursor = "grab";
       if (e.pointerId != null && el.hasPointerCapture(e.pointerId)) {
         el.releasePointerCapture(e.pointerId);
@@ -307,6 +321,78 @@ class GLSimView {
     el.addEventListener("dblclick", () => {
       Object.assign(this._orbitGoal, this._defaultView);
     });
+  }
+
+  _buildTooltip() {
+    this.tooltip = document.createElement("div");
+    this.tooltip.className = "sim3d-tooltip";
+    this.tooltip.style.cssText =
+      "position:absolute;display:none;pointer-events:none;z-index:60;" +
+      "background:rgba(8,15,12,.92);border:1px solid #1e3a2a;border-radius:9px;" +
+      "padding:8px 10px;color:#e6f5ec;font:11px ui-monospace,monospace;" +
+      "line-height:1.5;white-space:nowrap;box-shadow:0 10px 30px #000a;" +
+      "backdrop-filter:blur(6px);";
+    this.root.appendChild(this.tooltip);
+  }
+
+  // Hover-for-stats: everything shown is read straight from authoritative
+  // state (position, velocity, flags) or the plan steps — nothing invented.
+  _updateHover(sim) {
+    if (!this._mouse.over || this._dragging) return this._setHover(null);
+    this.raycaster.setFromCamera(this._mouse, this.camera);
+    const bodies = [];
+    for (const t of this.tokens.values()) bodies.push(t.body);
+    const hit = this.raycaster.intersectObjects(bodies, false)[0];
+    if (!hit) return this._setHover(null);
+    const p = (this.state.players || []).find(
+      (q) => q.id === hit.object.userData.playerId);
+    if (!p) return this._setHover(null);
+
+    this._setHover(p.id);
+    const isAttack = p.team === sim.attackingTeam;
+    const color = p.team === "home" ? HOME : AWAY;
+    const speed = Math.hypot(p.vx || 0, p.vy || 0);
+    const b = this.state.ball || { x: p.x, y: p.y };
+    const toBall = Math.hypot(p.x - b.x, p.y - b.y);
+
+    const lines = [
+      `<b style="color:${color}">#${p.number}</b> · ` +
+      `${isAttack ? "attacking" : "defending"}`,
+      `${speed.toFixed(1)} m/s · ${toBall.toFixed(0)} m from ball`,
+    ];
+    if (isAttack && p.number === sim.ballOwnerNumber) {
+      lines.push(`<span style="color:${BALL}">● on the ball</span>`);
+    }
+    if (isAttack) {
+      for (const s of sim.steps || []) {
+        const pct = s.successProbability != null
+          ? ` · ${Math.round(s.successProbability * 100)}%` : "";
+        if (s.fromNumber === p.number) {
+          lines.push(`${s.type === "shot" ? "shoots" : "plays"} step ${s.index + 1}${pct}`);
+        } else if (s.toNumber === p.number) {
+          lines.push(`receives step ${s.index + 1}${pct}`);
+        }
+      }
+    }
+    if (p.edited) lines.push(`<span style="color:#a7f3d0">repositioned by coach</span>`);
+
+    this.tooltip.innerHTML = lines.join("<br>");
+    this.tooltip.style.display = "block";
+    const w = this.tooltip.offsetWidth, h = this.tooltip.offsetHeight;
+    const maxX = (this.mount.clientWidth || 0) - w - 8;
+    const x = Math.min(this._mouse.px + 16, Math.max(8, maxX));
+    const y = Math.max(8, this._mouse.py - h - 12);
+    this.tooltip.style.left = `${x}px`;
+    this.tooltip.style.top = `${y}px`;
+  }
+
+  _setHover(id) {
+    if (this._hoverId === id) return;
+    const prev = this.tokens.get(this._hoverId);
+    if (prev) prev.key = "";           // force material refresh next frame
+    this._hoverId = id;
+    if (id == null) this.tooltip.style.display = "none";
+    if (!this._dragging) this.root.style.cursor = id != null ? "pointer" : "grab";
   }
 
   _updateCamera() {
@@ -336,6 +422,7 @@ class GLSimView {
     if (!this.visible) return;
     this.visible = false;
     this.root.style.display = "none";
+    this._setHover(null);
   }
 
   applyState(state) {
@@ -379,8 +466,9 @@ class GLSimView {
 
       const isAttack = p.team === attack;
       const isCarrier = isAttack && p.number === carrier;
+      const isHover = p.id === this._hoverId;
       if (isCarrier) carrierToken = t;
-      const key = `${p.team}:${isAttack}:${isCarrier}:${p.number}`;
+      const key = `${p.team}:${isAttack}:${isCarrier}:${isHover}:${p.number}`;
       if (t.key !== key) {
         t.key = key;
         const base = p.team === "home" ? HOME : AWAY;
@@ -388,7 +476,7 @@ class GLSimView {
         mat.color.set(base);
         mat.transparent = !isAttack;
         mat.opacity = isAttack ? 1 : 0.82;
-        mat.emissive.set(isCarrier ? 0x6b5e00 : 0x000000);
+        mat.emissive.set(isCarrier ? 0x6b5e00 : isHover ? 0x274d3d : 0x000000);
       }
     }
     for (const [id, t] of this.tokens) {
@@ -412,6 +500,7 @@ class GLSimView {
     }
 
     this._drawLane(sim);
+    this._updateHover(sim);
     this._updateCamera();
     this.renderer.render(this.scene, this.camera);
   }

@@ -140,6 +140,35 @@ class SimulationSeekTests(unittest.TestCase):
         engine = SimulationEngine()
         self.assertIsInstance(engine.seek_step(0), str)
 
+    def test_forward_seek_spans_recording_beyond_restored_forecast(self):
+        # A lane screened at ~3.0 m: too tight for the planner (>= 3.2) so the
+        # plan is a lone hopeful shot, but fine for execution (>= 2.4) so the
+        # move extends itself with new steps while it plays. Seeking back then
+        # restores the short one-step forecast — steps the move actually
+        # played beyond it must remain reachable through their checkpoints.
+        engine = SimulationEngine()
+        ok = engine.build_and_start(
+            [
+                player("H2", "home", 2, 30, 34),
+                player("H7", "home", 7, 48, 34),
+                player("A9", "away", 9, 39, 31),
+                player("A1", "away", 1, 100, 30),
+                player("A2", "away", 2, 101, 38),
+            ],
+            (29.5, 34.0), "home", 105.0, 68.0,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(len(engine.steps), 1)
+        run_to_done(engine)
+        last = max(engine._checkpoints)
+        self.assertGreater(last, 0)
+        self.assertIsNone(engine.seek_step(0))
+        self.assertEqual(len(engine.steps), 1)   # restored forecast is short
+        self.assertGreater(engine.snapshot()["maxReachedStep"], 0)
+        self.assertIsNone(engine.seek_step(last))
+        self.assertEqual(engine.step_index, last)
+        self.assertIsInstance(engine.seek_step(last + 1), str)
+
     def test_resume_after_seek_replays_deterministically(self):
         engine = start_engine()
         run_to_done(engine)

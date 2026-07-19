@@ -212,11 +212,17 @@ class SimulationEngine:
         resuming replays forward through the same deterministic engine —
         scrubbing is state restore plus normal playback, never reverse physics.
         Only steps that have actually played have a checkpoint; the forecast
-        tail is not seekable until the move reaches it."""
+        tail is not seekable until the move reaches it.
+
+        The valid range spans the *recorded timeline*, not just the current
+        step list: seeking backward restores that moment's shorter forecast,
+        and steps the move actually played beyond it stay reachable through
+        their checkpoints (each checkpoint restores its own step list)."""
         if not self.active:
             return "no simulation is running"
-        if index < 0 or index >= len(self.steps):
-            return f"step index {index} is out of range (0-{len(self.steps) - 1})"
+        hi = max(len(self.steps) - 1, max(self._checkpoints, default=-1))
+        if index < 0 or index > hi:
+            return f"step index {index} is out of range (0-{hi})"
         cp = self._checkpoints.get(index)
         if cp is None:
             return f"step {index} has not played yet"
@@ -878,4 +884,7 @@ class SimulationEngine:
             "outcome": self.outcome,
             "sequenceProbability": self._sequence_probability,
             "trajectoryFrames": len(self.trajectory),
+            # Highest step start recorded so far — the scrub-forward horizon,
+            # which can exceed the restored forecast after a backward seek.
+            "maxReachedStep": max(self._checkpoints, default=-1),
         }
