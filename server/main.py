@@ -180,16 +180,17 @@ async def calibration_marker(marker_id: int):
     )
 
 
-def send_vision_control(command_type: str) -> bool:
+def send_vision_control(command_type: str, **details) -> bool:
     if vision_control_queue is None:
         return False
+    message = {"type": command_type, **details}
     try:
-        vision_control_queue.put_nowait({"type": command_type})
+        vision_control_queue.put_nowait(message)
         return True
     except queue_mod.Full:
         try:
             vision_control_queue.get_nowait()
-            vision_control_queue.put_nowait({"type": command_type})
+            vision_control_queue.put_nowait(message)
             return True
         except (queue_mod.Empty, queue_mod.Full):
             return False
@@ -263,12 +264,21 @@ async def coach_advice():
 
 @app.get("/api/voice-token")
 async def voice_token():
-    """Mint a short-lived signed URL so the browser can open a voice session.
+    """Mint short-lived credentials so the browser can open a voice session.
 
     The ElevenLabs API key must never reach the page: the agent is private, so
-    the browser gets a signed URL minted here instead. The agent it points at is
-    configured (by voice_agent.py) to use OpenRouter as its LLM, so this endpoint
-    is the whole browser-side dependency on ElevenLabs.
+    the browser gets minted credentials from here instead. The agent it points at
+    is configured (by voice_agent.py) to use OpenRouter as its LLM, so this
+    endpoint is the whole browser-side dependency on ElevenLabs.
+
+    Two credentials, because they select different transports and the transport
+    is what determines microphone quality. A conversation token connects over
+    WebRTC, which runs the mic through ElevenLabs' echo cancellation and
+    background-noise removal before transcription -- the thing that keeps a noisy
+    room out of the transcript. A signed URL only ever connects over a plain
+    WebSocket (the SDK rejects the pairing outright), which leaves filtering to
+    whatever the browser does locally. We mint both and let the page prefer the
+    token, so a token failure degrades to a working session instead of no voice.
     """
     api_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
     agent_id = os.environ.get("ELEVENLABS_AGENT_ID", "").strip()
@@ -281,17 +291,36 @@ async def voice_token():
             "Run 'python voice_agent.py' once to create and configure an agent.",
         )
 
-    url = "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url"
+    base = "https://api.elevenlabs.io/v1/convai/conversation"
+    params = {"agent_id": agent_id}
+    headers = {"xi-api-key": api_key}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-            response = await client.get(
-                url, params={"agent_id": agent_id}, headers={"xi-api-key": api_key}
+            token_response, url_response = await asyncio.gather(
+                client.get(f"{base}/token", params=params, headers=headers),
+                client.get(f"{base}/get-signed-url", params=params, headers=headers),
+                return_exceptions=True,
             )
     except httpx.HTTPError as error:
         raise HTTPException(502, "Could not reach ElevenLabs.") from error
-    if response.is_error:
-        raise HTTPException(502, f"ElevenLabs rejected the request: {response.text[:200]}")
-    return JSONResponse({"signedUrl": response.json()["signed_url"], "agentId": agent_id})
+
+    def _field(response: object, key: str) -> str | None:
+        if isinstance(response, BaseException) or response.is_error:
+            return None
+        return response.json().get(key)
+
+    signed_url = _field(url_response, "signed_url")
+    conversation_token = _field(token_response, "token")
+    if not signed_url and not conversation_token:
+        detail = url_response if not isinstance(url_response, BaseException) else token_response
+        text = getattr(detail, "text", str(detail))[:200]
+        raise HTTPException(502, f"ElevenLabs rejected the request: {text}")
+
+    return JSONResponse({
+        "signedUrl": signed_url,
+        "conversationToken": conversation_token,
+        "agentId": agent_id,
+    })
 
 
 # --------------------------------------------------------------------------- #
@@ -480,7 +509,19 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         return
 
     if t == "SET_PLAYING":
-        state.set_playing(bool(p.get("playing", True)))
+        playing = bool(p.get("playing", True))
+        state.set_playing(playing)
+        if playing:
+            send_vision_control("set_drawing_mode", enabled=False)
+    elif t == "SET_DRAWING_MODE":
+        enabled = p.get("enabled")
+        if not isinstance(enabled, bool):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": "enabled must be true or false"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+        state.set_drawing_mode(enabled)
+        send_vision_control("set_drawing_mode", enabled=enabled)
     elif t == "SET_PLAYBACK_TIME":
         # Fires many times a second from the video's frame callback. We still
         # broadcast a snapshot each call (matches every other command) --
@@ -496,6 +537,8 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
             return
         playing_val = p.get("playing")
         state.set_playback_time(mt, playing_val if isinstance(playing_val, bool) else None)
+        if playing_val is True:
+            send_vision_control("set_drawing_mode", enabled=False)
     elif t == "SEEK_TO":
         try:
             mt = float(p.get("mediaTimeMs", 0.0))
@@ -515,10 +558,12 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
             return
     elif t == "ENTER_EDIT_MODE":
         state.enter_edit_mode()
+        send_vision_control("set_drawing_mode", enabled=False)
     elif t == "EXIT_EDIT_MODE":
         state.exit_edit_mode()
     elif t == "RESET_SCENARIO":
         state.reset_scenario()
+        send_vision_control("set_drawing_mode", enabled=False)
     elif t == "LOAD_MATCH":
         match_id = p.get("matchId")
         if not isinstance(match_id, str) or not state.load_match(match_id):
@@ -526,6 +571,7 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
                 "ERROR", {"reason": f"could not load match {match_id!r}"},
                 state.scenario_id, state.next_sequence(), now_ms()))
             return
+        send_vision_control("set_drawing_mode", enabled=False)
     elif t in ("TOGGLE_CALIBRATION", "START_CALIBRATION"):
         if t == "TOGGLE_CALIBRATION" and state.calibration_overlay:
             state.cancel_calibration()

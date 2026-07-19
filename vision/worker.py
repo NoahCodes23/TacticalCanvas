@@ -439,6 +439,7 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
     calibration_last_status = 0.0
     calibration_detector: ArucoMarkerDetector | None = None
     calibration_accumulator: CalibrationAccumulator | None = None
+    drawing_mode = False
 
     def emit_calibration_status(phase: str, **details) -> None:
         emit({
@@ -448,9 +449,10 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
             **details,
         })
 
-    def process_calibration_commands() -> None:
+    def process_control_commands() -> None:
         nonlocal calibration_active, calibration_started
         nonlocal calibration_detector, calibration_accumulator
+        nonlocal drawing_mode
         if control_queue is None:
             return
         while True:
@@ -480,6 +482,12 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                 calibration_detector = None
                 calibration_accumulator = None
                 emit_calibration_status("cancelled", progress=0.0)
+            elif command_type == "set_drawing_mode":
+                next_mode = bool(command.get("enabled", False))
+                if next_mode != drawing_mode:
+                    drawing_mode = next_mode
+                    with state_lock:
+                        trackers.clear()
 
     def on_result(result, _output_image, timestamp_ms: int) -> None:
         nonlocal hand_px, inference_fps, last_result_perf, last_stats_perf
@@ -550,20 +558,20 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                     pointer, pinch_ratio, world_pinch_ratio = pinch_pointer(
                         landmarks, w, h, world_landmarks
                     )
-                    (
-                        draw_pointer,
-                        erase_pointer,
-                        draw_pose,
-                        erase_pose,
-                        clear_pose,
-                    ) = paint_gestures(
-                        landmarks, w, h
-                    )
                     tracker = trackers.setdefault(hand_id, HandTracker(hand_id))
-                    if erase_pose or tracker.erasing or clear_pose:
-                        pointer = erase_pointer
-                    elif draw_pose or tracker.drawing:
-                        pointer = draw_pointer
+                    draw_pose = False
+                    erase_pose = False
+                    if drawing_mode:
+                        (
+                            draw_pointer,
+                            erase_pointer,
+                            draw_pose,
+                            erase_pose,
+                        ) = paint_gestures(landmarks, w, h)
+                        if erase_pose or tracker.erasing:
+                            pointer = erase_pointer
+                        elif draw_pose or tracker.drawing:
+                            pointer = draw_pointer
                     bx, by = calib.to_board(*pointer, frame_size=(w, h))
 
                     if not (math.isfinite(bx) and math.isfinite(by)):
@@ -579,7 +587,7 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                         world_pinch_ratio=world_pinch_ratio,
                         draw_pose=draw_pose,
                         erase_pose=erase_pose,
-                        clear_pose=clear_pose,
+                        paint_mode=drawing_mode,
                         prediction_horizon_s=min(
                             0.10, current_pipeline_ms / 1000.0 + 0.02
                         ),
@@ -682,7 +690,7 @@ def _run_loop(event_queue, camera_index: int, show_preview: bool, control_queue)
                 last_sequence = packet.sequence
                 frame = packet.image
                 h, w = frame.shape[:2]
-                process_calibration_commands()
+                process_control_commands()
                 if (
                     calibration_active
                     and calibration_detector is not None

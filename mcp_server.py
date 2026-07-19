@@ -43,6 +43,8 @@ import time
 
 import httpx
 import websockets
+from pydantic import Field
+from typing import Annotated
 from fastmcp import Context, FastMCP
 
 # Keep third-party logging quiet. Importing this module (voice_agent.py does) must
@@ -87,6 +89,73 @@ def _http_url() -> str:
     return f"http://localhost:{port}"
 
 
+# Analysis-overlay buttons in the dashboard sidebar: name -> (command, snapshot
+# field). The server side of each is a pure toggle, so the snapshot field is what
+# lets set_overlay honour an explicit enabled=true/false.
+OVERLAYS = {
+    "offside": ("TOGGLE_OFFSIDE", "offsideOverlay"),
+    "compactness": ("TOGGLE_COMPACTNESS", "compactnessOverlay"),
+    "shadows": ("TOGGLE_SHADOWS", "shadowOverlay"),
+    "pitch_control": ("TOGGLE_PITCH_CONTROL", "pitchControlOverlay"),
+    "formation": ("TOGGLE_FORMATION", "formationOverlay"),
+    "suggested": ("TOGGLE_SUGGESTED", "suggestedOverlay"),
+}
+
+# The three AI-experiment switches. Keys are the server's experiment names
+# (server/state.py:EXPERIMENT_DEFAULTS); the aliases are what a person says.
+EXPERIMENTS = {
+    "passRecommendations": ("pass_recommendations", "passes"),
+    "technicalIndicators": ("technical_indicators", "indicators"),
+    "receiverTargets": ("receiver_targets", "targets"),
+}
+# Lookup is on a lowercased key, so the camelCase server name is folded too --
+# a model that read the raw state and echoes "passRecommendations" still lands.
+_EXPERIMENT_ALIASES = {
+    alias.lower(): name
+    for name, aliases in EXPERIMENTS.items()
+    for alias in (name, *aliases)
+}
+
+# The dashboard's one-click demo buttons: experiment settings, plus whether to
+# play (True), pause (False), or leave playback alone (None).
+DEMO_PRESETS = {
+    "decision": ({"passRecommendations": True, "technicalIndicators": True,
+                  "receiverTargets": False}, False),
+    "shape": ({"passRecommendations": False, "technicalIndicators": True,
+               "receiverTargets": False}, True),
+    "movement": ({"passRecommendations": True, "technicalIndicators": True,
+                  "receiverTargets": True}, False),
+    "freeze": ({"technicalIndicators": True}, False),
+    "clear": ({"passRecommendations": False, "technicalIndicators": False,
+               "receiverTargets": False}, None),
+}
+
+
+# Enum-in-schema, str-at-runtime.
+#
+# The enum is what stops the model guessing a value that does not exist -- it is
+# the difference between "suggest positions" reaching set_overlay(suggested) and
+# falling through to whatever tool it does understand. The annotation stays `str`
+# rather than Literal on purpose: speech transcription produces "pitch control"
+# and "receiver targets", and the normalisation in each tool absorbs that. A
+# Literal would reject those before the tool ever ran.
+def _enum(values, description: str):
+    return Annotated[str, Field(description=description, json_schema_extra={"enum": list(values)})]
+
+
+OverlayName = _enum(
+    OVERLAYS,
+    "Which overlay to switch. 'suggested' draws ghost circles showing where "
+    "players should be standing -- use it for any request to suggest, recommend "
+    "or show better positions.",
+)
+ExperimentName = _enum(
+    (aliases[0] for aliases in EXPERIMENTS.values()),
+    "Which AI experiment switch to change.",
+)
+PresetName = _enum(DEMO_PRESETS, "Which canned demo view to apply.")
+TeamName = _enum(("home", "away"), "Which side to coach.")
+
 mcp = FastMCP("tacticalcanvas")
 
 _seq = 0
@@ -126,19 +195,56 @@ async def _get_state() -> dict:
         return await _recv_snapshot(ws)
 
 
-async def _send_commands(envelopes: list[dict]) -> dict:
+async def _drain_to_pong(ws) -> dict | None:
     """
-    Open one connection, send the given commands in order, return the final
-    snapshot. A single connection keeps drag ownership stable across the
-    START/END pair (the server scopes ownership per-connection).
+    Send a PING and read until the PONG, returning the last STATE_SNAPSHOT seen.
+
+    The barrier matters. handle_command() broadcasts a snapshot at the end of
+    every command, but the playback loop *also* broadcasts on its own tick, so a
+    snapshot already in flight can arrive first -- reading "the next snapshot"
+    after a command reports pre-command state. PING is answered inline and in
+    order, so once PONG lands, every command we sent before it has been handled
+    and its snapshot already queued ahead of the PONG. The last snapshot before
+    the PONG is therefore the post-command one.
+    """
+    await ws.send(_dumps(_envelope("PING", {"t": time.time() * 1000.0})))
+    latest = None
+    while True:
+        import json
+
+        data = json.loads(await ws.recv())
+        kind = data.get("type")
+        if kind == "STATE_SNAPSHOT":
+            latest = data["payload"]
+        elif kind == "PONG":
+            return latest
+        elif kind == "ERROR":
+            raise RuntimeError(f"server error: {data['payload'].get('reason')}")
+
+
+async def _run_commands(build) -> dict:
+    """
+    Open one connection, send the commands `build` derives from the current
+    snapshot, and return the state that resulted from them.
+
+    One connection per call, for two reasons: it keeps drag ownership stable
+    across a START/END pair (the server scopes ownership per-connection), and it
+    lets a command depend on freshly-read state without another client's toggle
+    slipping in between the read and the write.
     """
     async with websockets.connect(_ws_url()) as ws:
-        await _recv_snapshot(ws)  # drain the on-connect snapshot
-        last = None
+        snapshot = await _recv_snapshot(ws)  # the on-connect snapshot
+        envelopes = build(snapshot)
+        if not envelopes:
+            return snapshot
         for env in envelopes:
             await ws.send(_dumps(env))
-            last = await _recv_snapshot(ws)  # each command triggers a broadcast
-        return last if last is not None else await _recv_snapshot(ws)
+        return await _drain_to_pong(ws) or await _recv_snapshot(ws)
+
+
+async def _send_commands(envelopes: list[dict]) -> dict:
+    """Send a fixed list of commands and return the resulting state."""
+    return await _run_commands(lambda _snapshot: envelopes)
 
 
 def _dumps(obj: dict) -> str:
@@ -236,6 +342,122 @@ async def toggle_calibration() -> dict:
     on or off. Used when aligning the projector, not during tactical editing."""
     s = await _send_commands([_envelope("TOGGLE_CALIBRATION")])
     return {"calibrationOverlay": s["calibrationOverlay"]}
+
+
+@mcp.tool
+async def start_calibration() -> dict:
+    """Start field calibration — the dashboard's 'Calibrate field' button. Shows
+    the four magenta targets and asks the vision worker to capture the corner
+    clicks. Fails if no camera/vision worker is running."""
+    s = await _send_commands([_envelope("START_CALIBRATION")])
+    return {"calibration": s.get("calibration"), "calibrationOverlay": s["calibrationOverlay"]}
+
+
+@mcp.tool
+async def cancel_calibration() -> dict:
+    """Cancel an in-progress field calibration and hide the marker overlay."""
+    s = await _send_commands([_envelope("CANCEL_CALIBRATION")])
+    return {"calibration": s.get("calibration"), "calibrationOverlay": s["calibrationOverlay"]}
+
+
+@mcp.tool
+async def set_overlay(overlay: OverlayName, enabled: bool | None = None) -> dict:
+    """Turn a tactical analysis overlay on or off on the projected pitch. These
+    are the dashboard's Analysis buttons. Valid overlay names:
+      'offside'       — the offside line
+      'compactness'   — line-to-line distances and team width
+      'shadows'       — defender reach shadows
+      'pitch_control' — the pitch-control / space-ownership map
+      'formation'     — the inferred formation for each team
+      'suggested'     — ghost circles for suggested player positions
+    Pass enabled=true/false to force a state, or omit it to toggle. Returns the
+    resulting on/off state of every overlay."""
+    key = overlay.strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in OVERLAYS:
+        raise ValueError(f"unknown overlay {overlay!r}. Valid: {', '.join(OVERLAYS)}")
+    command, field = OVERLAYS[key]
+
+    def build(snapshot: dict) -> list[dict]:
+        if enabled is not None and bool(snapshot.get(field)) == enabled:
+            return []  # already in the requested state; toggling would undo it
+        return [_envelope(command)]
+
+    s = await _run_commands(build)
+    return {name: bool(s.get(f)) for name, (_, f) in OVERLAYS.items()}
+
+
+@mcp.tool
+async def set_experiment(experiment: ExperimentName, enabled: bool = True) -> dict:
+    """Turn one of the three AI experiment switches on or off. These are the
+    dashboard's AI experiments panel. Valid names:
+      'pass_recommendations' — rank the available passes for the player on the ball
+      'technical_indicators' — the numeric indicator panel (line height, xT, space)
+      'receiver_targets'     — movement targets for potential receivers
+    Returns the resulting state of all three."""
+    key = _EXPERIMENT_ALIASES.get(experiment.strip().lower().replace("-", "_").replace(" ", "_"))
+    if key is None:
+        valid = ", ".join(aliases[0] for aliases in EXPERIMENTS.values())
+        raise ValueError(f"unknown experiment {experiment!r}. Valid: {valid}")
+    s = await _send_commands(
+        [_envelope("SET_EXPERIMENT", {"name": key, "enabled": bool(enabled)})]
+    )
+    return s["experiments"]
+
+
+@mcp.tool
+async def run_demo_preset(preset: PresetName) -> dict:
+    """Set up a canned demo view in one call — the dashboard's demo buttons.
+      'decision' — Demo 1: pause and rank the available passes
+      'shape'    — Demo 2: live team shape while the replay plays
+      'movement' — Demo 3: pause with pass ranking plus receiver movement targets
+      'freeze'   — freeze the frame with the indicator panel on
+      'clear'    — switch every experiment off, leaving playback as it is
+    Use this instead of several set_experiment calls when the user asks for one
+    of the demos."""
+    key = preset.strip().lower()
+    if key not in DEMO_PRESETS:
+        raise ValueError(f"unknown preset {preset!r}. Valid: {', '.join(DEMO_PRESETS)}")
+    settings, playing = DEMO_PRESETS[key]
+    commands = [
+        _envelope("SET_EXPERIMENT", {"name": name, "enabled": value})
+        for name, value in settings.items()
+    ]
+    if playing is not None:
+        commands.append(_envelope("SET_PLAYING", {"playing": playing}))
+    s = await _send_commands(commands)
+    return {"experiments": s["experiments"], "playing": s["playing"]}
+
+
+@mcp.tool
+async def list_matches() -> dict:
+    """List the test matches that can be loaded, and which one is active. Use
+    this to find the matchId for load_match."""
+    s = await _get_state()
+    return {"active": s["matchId"], "matches": s["availableMatches"]}
+
+
+@mcp.tool
+async def load_match(match_id: str) -> dict:
+    """Switch the board to a different test match. This rewinds to kickoff and
+    clears any manual player edits. Call list_matches first for valid ids."""
+    state = await _get_state()
+    available = [m["id"] for m in state["availableMatches"]]
+    if match_id not in available:
+        raise ValueError(f"unknown match_id {match_id!r}. Valid ids: {', '.join(available)}")
+    s = await _send_commands([_envelope("LOAD_MATCH", {"matchId": match_id})])
+    return {"matchId": s["matchId"], "matchLabel": s["matchLabel"], "frameIndex": s["frameIndex"]}
+
+
+@mcp.tool
+async def set_coaching_team(team: TeamName) -> dict:
+    """Choose which side the coaching advice and suggested positions are written
+    for — the dashboard's 'Switch side' button. Pass 'home' or 'away'. Changing
+    sides re-frames every subsequent get_coach_advice answer."""
+    key = team.strip().lower()
+    if key not in ("home", "away"):
+        raise ValueError(f"team must be 'home' or 'away', got {team!r}")
+    s = await _send_commands([_envelope("SET_COACHING_TEAM", {"team": key})])
+    return {"coachingTeam": s["coachingTeam"], "possession": s["possession"]}
 
 
 @mcp.tool
