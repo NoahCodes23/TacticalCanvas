@@ -257,6 +257,66 @@
     .pb-rate { grid-template-columns: 1fr auto 1fr; }
     .pb-row button { margin: 0; padding: 7px 8px; font-size: 11px; text-align: center; }
     #rate-val { min-width: 46px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+    /* Simulation HUD — overlays the 3D pop-out field. */
+    #sim-hud { position: absolute; inset: 0; z-index: 50; pointer-events: none; }
+    #sim-hud[hidden] { display: none; }
+    #sim-banner { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+                  padding: 6px 16px; border-radius: 999px; background: #0b1a12cc;
+                  border: 1px solid #1c3a29; color: #d1fae5; backdrop-filter: blur(6px);
+                  font: 700 12px system-ui, sans-serif; letter-spacing: .04em;
+                  text-transform: uppercase; box-shadow: 0 6px 24px #0007; }
+    #sim-panel { position: absolute; top: 56px; right: 16px; width: 236px;
+                 background: rgba(8, 15, 12, .82); border: 1px solid #1e3a2a;
+                 border-radius: 12px; padding: 12px 13px; color: #e6f5ec;
+                 backdrop-filter: blur(8px); box-shadow: 0 16px 48px #000a;
+                 pointer-events: auto; }
+    #sim-panel h3 { margin: 0 0 8px; font: 700 12px system-ui; letter-spacing: .04em;
+                    text-transform: uppercase; color: #a7f3d0; display: flex;
+                    align-items: center; justify-content: space-between; }
+    .sim-pill { font: 700 9px ui-monospace, monospace; padding: 2px 7px; border-radius: 999px;
+                text-transform: uppercase; letter-spacing: .06em; }
+    .sim-pill.goal { background: #052e16; color: #4ade80; }
+    .sim-pill.shot { background: #3a2e05; color: #fbbf24; }
+    .sim-pill.intercepted { background: #3a0a0a; color: #fb7185; }
+    .sim-pill.complete { background: #0b2540; color: #60a5fa; }
+    .sim-pill:empty { display: none; }
+    #sim-steps { list-style: none; margin: 0 0 10px; padding: 0;
+                 display: flex; flex-direction: column; gap: 4px; }
+    #sim-steps li { display: flex; align-items: baseline; gap: 7px; padding: 5px 8px;
+                    border-radius: 7px; background: #0e1c15; border-left: 2px solid #223a2c;
+                    font-size: 11px; line-height: 1.3; transition: background .2s, border-color .2s; }
+    #sim-steps li .st-num { font: 700 9px ui-monospace, monospace; color: #5b7767; min-width: 14px; }
+    #sim-steps li .st-label { font-weight: 600; color: #d1fae5; }
+    #sim-steps li .st-detail { margin-left: auto; color: #6f8a7b; font: 10px ui-monospace, monospace; }
+    #sim-steps li.active { background: #12352455; border-left-color: #34d399;
+                           box-shadow: 0 0 0 1px #34d39955 inset; }
+    #sim-steps li.active .st-label { color: #6ee7b7; }
+    #sim-steps li.done { opacity: .62; border-left-color: #2f6f4c; }
+    #sim-steps li.done .st-num::after { content: " ✓"; color: #4ade80; }
+    #sim-steps li.failed { border-left-color: #b91c1c; opacity: .8; }
+    #sim-steps li.failed .st-label { color: #fca5a5; text-decoration: line-through; }
+    #sim-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .sim-stat { background: #0e1c15; border-radius: 7px; padding: 6px 8px; }
+    .sim-stat span { display: block; font: 800 15px ui-monospace, monospace;
+                     color: #ecfdf5; font-variant-numeric: tabular-nums; }
+    .sim-stat label { font-size: 9px; color: #6f8a7b; text-transform: uppercase; letter-spacing: .05em; }
+    #sim-transport { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+                     display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+                     background: rgba(8, 15, 12, .85); border: 1px solid #1e3a2a;
+                     border-radius: 999px; backdrop-filter: blur(8px);
+                     box-shadow: 0 12px 40px #000a; pointer-events: auto; }
+    #sim-transport button { margin: 0; width: 40px; height: 40px; padding: 0; border-radius: 50%;
+                            font-size: 16px; display: flex; align-items: center; justify-content: center;
+                            background: #16352400; border: 1px solid #2a4a37; color: #d1fae5; }
+    #sim-transport button:hover { background: #1c4230; }
+    #sim-play { background: #10b981 !important; border-color: #10b981 !important; color: #04140d !important; }
+    #sim-stop { color: #fca5a5; }
+    #sim-rate-wrap { display: flex; align-items: center; gap: 4px; margin-left: 4px; }
+    #sim-rate-wrap button { width: 28px; height: 28px; font-size: 15px; }
+    #sim-rate { min-width: 34px; text-align: center; font: 700 12px ui-monospace, monospace;
+                color: #a7f3d0; }
+    #sim-start.running { background: #7f1d1d; }
   </style>
 </head>
 <body>
@@ -296,6 +356,33 @@
           <div id="ai-inspector-meaning">Click any metric or pass card to see what it measures.</div>
           <div id="ai-inspector-formula"></div>
           <div id="ai-inspector-read"></div>
+        </div>
+      </div>
+      <!-- Simulation HUD. Hidden until a sim is running; overlays the 3D view. -->
+      <div id="sim-hud" hidden>
+        <div id="sim-banner"><span id="sim-banner-text">Simulating coached move</span></div>
+        <div id="sim-panel">
+          <h3>Plan <span id="sim-outcome" class="sim-pill"></span></h3>
+          <ol id="sim-steps"></ol>
+          <div id="sim-stats">
+            <div class="sim-stat"><span id="sim-passes">0/0</span><label>passes</label></div>
+            <div class="sim-stat"><span id="sim-acc">0%</span><label>accuracy</label></div>
+            <div class="sim-stat"><span id="sim-xt">0.00</span><label>xT gained</label></div>
+            <div class="sim-stat"><span id="sim-fwd">0 m</span><label>progress</label></div>
+            <div class="sim-stat"><span id="sim-long">0 m</span><label>longest ball</label></div>
+            <div class="sim-stat"><span id="sim-top">0.0</span><label>top m/s</label></div>
+            <div class="sim-stat"><span id="sim-shots">0</span><label>shots</label></div>
+            <div class="sim-stat"><span id="sim-time">0.0s</span><label>elapsed</label></div>
+          </div>
+        </div>
+        <div id="sim-transport">
+          <button id="sim-play" title="Play / pause the simulation">⏸</button>
+          <button id="sim-stop" title="Stop and return to replay">⏹</button>
+          <div id="sim-rate-wrap">
+            <button id="sim-rate-down">−</button>
+            <span id="sim-rate">1×</span>
+            <button id="sim-rate-up">+</button>
+          </div>
         </div>
       </div>
     </div>
@@ -364,6 +451,11 @@
         <tr><td>Throws</td><td id="ms-h-t">—</td><td id="ms-a-t">—</td></tr>
         <tr><td>Live xT (ball)</td><td id="ms-xt-home">—</td><td id="ms-xt-away">—</td></tr>
       </table>
+
+      <h2>Simulation</h2>
+      <button id="sim-start" class="primary">▶ Simulate coached move</button>
+      <div class="sub">Freezes this frame and plays it out in 3D — passes, runs,
+        and a reactive defence. Pause / stop from the on-pitch controls.</div>
 
       <h2>Tactics</h2>
       <button id="offside">▎ Offside line</button>
@@ -470,9 +562,11 @@
     import { Connection } from "/static/shared/ws.js";
     import { PitchRenderer } from "/static/shared/pitch.js";
     import { VoiceSession } from "/static/shared/voice.js";
+    import { Sim3DView } from "/static/shared/sim3d.js";
 
     const renderer = new PitchRenderer(document.getElementById("stage"),
                                        { showCalibration: true });
+    const sim3d = new Sim3DView(document.getElementById("stage"));
     const conn = new Connection("dashboard");
 
     // Query-param handoff from the landing page: ?video=<name> attaches the
@@ -547,6 +641,7 @@
     conn.onState = (s) => {
       state = s;
       renderer.applyState(s);
+      sim3d.applyState(s);
       if (matchParam && !matchRequested && s?.availableMatches?.some((m) => m.id === matchParam)) {
         matchRequested = true;
         if (s.matchId !== matchParam) conn.send("LOAD_MATCH", { matchId: matchParam });
@@ -731,6 +826,74 @@
       } finally {
         coachBusy = false;
       }
+    }
+
+    // --- Simulation controls ---------------------------------------------
+    $("sim-start").onclick = () => {
+      if (state?.simulation?.active) conn.send("STOP_SIMULATION");
+      else conn.send("START_SIMULATION");
+    };
+    $("sim-play").onclick = () => {
+      if (state?.simulation?.playing) conn.send("PAUSE_SIMULATION");
+      else conn.send("RESUME_SIMULATION");
+    };
+    $("sim-stop").onclick = () => conn.send("STOP_SIMULATION");
+    const SIM_RATES = [0.25, 0.5, 1, 1.5, 2, 3];
+    const stepSimRate = (dir) => {
+      const cur = state?.simulation?.rate ?? 1;
+      let i = SIM_RATES.findIndex((r) => Math.abs(r - cur) < 0.01);
+      if (i < 0) i = SIM_RATES.indexOf(1);
+      i = Math.min(SIM_RATES.length - 1, Math.max(0, i + dir));
+      conn.send("SET_SIMULATION_RATE", { rate: SIM_RATES[i] });
+    };
+    $("sim-rate-up").onclick = () => stepSimRate(1);
+    $("sim-rate-down").onclick = () => stepSimRate(-1);
+
+    const OUTCOME_LABEL = { goal: "GOAL", shot: "shot taken",
+                            intercepted: "intercepted", complete: "move complete" };
+    function renderSimulation() {
+      const sim = state?.simulation;
+      const hud = $("sim-hud");
+      const startBtn = $("sim-start");
+      if (!sim?.active) {
+        hud.hidden = true;
+        startBtn.textContent = "▶ Simulate coached move";
+        startBtn.classList.remove("running");
+        return;
+      }
+      hud.hidden = false;
+      startBtn.textContent = "⏹ Stop simulation";
+      startBtn.classList.add("running");
+      $("sim-play").textContent = sim.playing ? "⏸" : "▶";
+      $("sim-rate").textContent = `${sim.rate}×`;
+
+      const outcome = $("sim-outcome");
+      outcome.textContent = sim.outcome ? (OUTCOME_LABEL[sim.outcome] || sim.outcome) : "";
+      outcome.className = "sim-pill" + (sim.outcome ? ` ${sim.outcome}` : "");
+      $("sim-banner-text").textContent = sim.outcome
+        ? (OUTCOME_LABEL[sim.outcome] || sim.outcome).toUpperCase()
+        : "Simulating coached move";
+
+      const stepsEl = $("sim-steps");
+      stepsEl.replaceChildren(...(sim.steps || []).map((s) => {
+        const li = document.createElement("li");
+        li.className = s.status;
+        const n = document.createElement("span"); n.className = "st-num"; n.textContent = s.index + 1;
+        const lab = document.createElement("span"); lab.className = "st-label"; lab.textContent = s.label;
+        const det = document.createElement("span"); det.className = "st-detail"; det.textContent = s.detail;
+        li.append(n, lab, det);
+        return li;
+      }));
+
+      const st = sim.stats || {};
+      $("sim-passes").textContent = `${st.passesCompleted ?? 0}/${st.passesAttempted ?? 0}`;
+      $("sim-acc").textContent = `${st.passAccuracy ?? 0}%`;
+      $("sim-xt").textContent = (st.xtGained ?? 0).toFixed(3);
+      $("sim-fwd").textContent = `${Math.round(st.forwardProgressM ?? 0)} m`;
+      $("sim-long").textContent = `${Math.round(st.longestPassM ?? 0)} m`;
+      $("sim-top").textContent = (st.topSpeedMps ?? 0).toFixed(1);
+      $("sim-shots").textContent = st.shots ?? 0;
+      $("sim-time").textContent = `${(st.elapsedS ?? 0).toFixed(1)}s`;
     }
 
     $("play").onclick = () => {
@@ -1226,6 +1389,7 @@
       renderMatches();
       renderMatchEvents();
       renderMatchStats();
+      renderSimulation();
       $("d-rev").textContent = state.revision;
       $("d-frame").textContent = state.frameIndex;
       $("d-time").textContent = `${(state.mediaTimeMs / 1000).toFixed(1)} s`;

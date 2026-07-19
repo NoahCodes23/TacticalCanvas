@@ -12,6 +12,7 @@ from .analytics.formation import detect_formation
 from .analytics.reach import reach_polygon
 from .analytics.suggested import suggested_positions
 from .match_data import PITCH_LENGTH, PITCH_WIDTH, Player
+from .simulation import SimulationEngine
 from tactical_canvas.calibration.layout import create_field_marker_layout
 
 # The rendered piece radius is roughly 1.15m. A 4m centre-to-centre capture
@@ -103,6 +104,8 @@ class AppState:
         self.match_id = match_data.current_id()
         self.match_label = match_data.current_label()
 
+        self.simulation = SimulationEngine()
+
         self.grabbed: dict[str, str] = {}
         self.cursors: dict[str, dict] = {}
         self.drawings: list[dict] = []
@@ -158,6 +161,20 @@ class AppState:
         return best
 
     def tick(self, dt: float) -> None:
+        # A running simulation owns the world: it drives the shared Player
+        # objects and the ball, and the match clock is frozen underneath it. Every
+        # overlay and snapshot field keeps working because it reads those same
+        # objects. Bumping the revision each tick keeps live overlays (pitch
+        # control, shadows) repainting against the moving shape.
+        if self.simulation.active:
+            if self.simulation.playing:
+                self.simulation.tick(dt)
+                self.simulation.write_back(self.players)
+                self.ball = self.simulation.ball
+                self.possession = self.simulation.attacking_team
+                self._bump()
+            return
+
         video_driven = (
             self.external_clock_last_ms > 0
             and now_ms() - self.external_clock_last_ms < EXTERNAL_CLOCK_STALE_MS
@@ -231,7 +248,45 @@ class AppState:
             self.grabbed.clear()
             self._bump()
 
+    def start_simulation(self) -> bool:
+        """Freeze the current frame and play out the coached move from it.
+
+        Pauses replay/edit first so the sim seeds from a still shape, then hands
+        the world to the engine. Returns False if there wasn't enough on the
+        pitch to plan a move."""
+        self.playing = False
+        self.edit_mode = False
+        self.grabbed.clear()
+        ok = self.simulation.build_and_start(
+            self.players, self.ball, self.possession, PITCH_LENGTH, PITCH_WIDTH
+        )
+        self._bump()
+        return ok
+
+    def pause_simulation(self) -> None:
+        self.simulation.pause()
+        self._bump()
+
+    def resume_simulation(self) -> None:
+        self.simulation.resume()
+        self._bump()
+
+    def stop_simulation(self) -> None:
+        """End the sim and restore the pitch to the current match frame."""
+        self.simulation.stop()
+        t = self.media_time_ms / 1000.0
+        match_data.advance(self.players, t)
+        self.ball = match_data.ball_position(t)
+        self._bump()
+
+    def set_simulation_rate(self, rate: float) -> None:
+        self.simulation.set_rate(rate)
+        self._bump()
+
     def set_playing(self, playing: bool) -> None:
+        if self.simulation.active:
+            # Starting replay abandons any running simulation.
+            self.stop_simulation()
         self.playing = playing
         if playing:
             self.edit_mode = False
@@ -1005,6 +1060,7 @@ class AppState:
             "drawingRevision": self.drawing_revision,
             "vision": self.vision_stats,
             "xt": self._xt_snapshot(),
+            "simulation": self.simulation.snapshot(),
         }
 
     def _xt_snapshot(self) -> dict:

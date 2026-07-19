@@ -592,6 +592,26 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
                 "ERROR", {"reason": f"bad seconds {p.get('seconds')!r}"},
                 state.scenario_id, state.next_sequence(), now_ms()))
             return
+    elif t == "START_SIMULATION":
+        if not state.start_simulation():
+            await ws.send_json(server_message(
+                "ERROR", {"reason": "not enough players to plan a simulation"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+    elif t == "PAUSE_SIMULATION":
+        state.pause_simulation()
+    elif t == "RESUME_SIMULATION":
+        state.resume_simulation()
+    elif t == "STOP_SIMULATION":
+        state.stop_simulation()
+    elif t == "SET_SIMULATION_RATE":
+        try:
+            state.set_simulation_rate(float(p.get("rate", 1.0)))
+        except (TypeError, ValueError):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"bad rate {p.get('rate')!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
     elif t == "DRAG_PLAYER_START":
         state.drag_start(p["playerId"], p["boardX"], p["boardY"], owner)
     elif t == "DRAG_PLAYER_MOVE":
