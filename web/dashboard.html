@@ -98,8 +98,6 @@
     #coach-text { min-width: 0; }
     #coach-name { font: 700 13px system-ui, sans-serif; letter-spacing: .02em;
                   transition: color .18s; }
-    #coach-tagline { margin-top: 1px; color: #7d8fa1; font-size: 10px; line-height: 1.3;
-                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     /* Full playstyle description as a floating popover: absolutely positioned
        under the card so it overlays the content below instead of pushing it
        down. Shown on hover or keyboard focus. */
@@ -358,7 +356,6 @@
           <span id="coach-emoji">⚖️</span>
           <div id="coach-text">
             <div id="coach-name">Balanced</div>
-            <div id="coach-tagline">Pragmatic · pick the highest-percentage action</div>
           </div>
         </div>
         <button id="coach-next" class="arrow" aria-label="Next coach">›</button>
@@ -806,7 +803,6 @@
       $("coach-emoji").textContent = coach.emoji;
       $("coach-name").textContent = coach.name;
       $("coach-name").style.color = coach.accent;
-      $("coach-tagline").textContent = coach.tagline;
       // Floating popover holds the full, untruncated description. Real DOM text
       // (not a title attr), so :focus-within reveals it for keyboard users too.
       const tip = $("coach-tip");
