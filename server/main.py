@@ -648,6 +648,24 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
                 "ERROR", {"reason": f"bad rate {p.get('rate')!r}"},
                 state.scenario_id, state.next_sequence(), now_ms()))
             return
+    elif t == "SIM_SEEK_STEP":
+        idx = p.get("index")
+        if isinstance(idx, bool) or not isinstance(idx, int):
+            err = f"bad step index {idx!r}"
+        else:
+            err = state.seek_simulation_step(idx)
+        if err is not None:
+            await ws.send_json(server_message(
+                "ERROR", {"reason": err},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+    elif t in ("SIM_STEP_FORWARD", "SIM_STEP_BACK"):
+        err = state.step_simulation(1 if t == "SIM_STEP_FORWARD" else -1)
+        if err is not None:
+            await ws.send_json(server_message(
+                "ERROR", {"reason": err},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
     elif t == "DRAG_PLAYER_START":
         state.drag_start(p["playerId"], p["boardX"], p["boardY"], owner)
     elif t == "DRAG_PLAYER_MOVE":

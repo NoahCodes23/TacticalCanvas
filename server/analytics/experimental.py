@@ -338,6 +338,27 @@ def _score_pass(
     }
 
 
+def pass_completion_probability(
+    players: list[Any],
+    carrier: Any,
+    receiver: Any,
+    ball: tuple[float, float],
+    direction: int,
+    pitch_length: float,
+    pitch_width: float,
+) -> float:
+    """Completion probability for one pass, from the same scorer ``analyze`` uses.
+
+    Public entry point so other modules (the simulation planner) can price a
+    pass without re-deriving the whole analysis snapshot — one formula, one
+    number, everywhere.
+    """
+    scored = _score_pass(
+        players, carrier, receiver, ball, direction, pitch_length, pitch_width
+    )
+    return float(scored["completionProbability"])
+
+
 def _convex_hull_area(points: list[tuple[float, float]]) -> float:
     """Monotonic-chain convex hull area, with no scipy dependency."""
     unique = sorted(set(points))
