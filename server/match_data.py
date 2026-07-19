@@ -176,11 +176,9 @@ class MatchTracks:
         self.n_players = int(positions.shape[1])
         self.duration = self.n_frames / self.fps
 
-        # Must be initialised before the events below: scoring a SHOT needs the
-        # attack direction, so _xg_for_shot reaches _home_attacks_positive on the
-        # very first event. Assigning this afterwards left the attribute missing
-        # for any match whose events include a shot.
-        self._attack_dir: np.ndarray | None = None  # built on first stats call
+        # Direction cache must exist before we format events: xG needs the ball's
+        # attacking direction, and _home_attacks_positive() reads this lazily.
+        self._attack_dir: np.ndarray | None = None  # built on first use
 
         # Display-ready events, sorted by start time, with a parallel time list
         # for bisecting "everything up to the current replay clock".

@@ -3,7 +3,7 @@ import time
 from collections import deque
 from types import SimpleNamespace
 
-from . import match_data
+from . import coaches, match_data
 from .analytics.briefing import build_briefing
 from .analytics.experimental import analyze as analyze_experimental
 from .analytics.experimental import attacking_direction
@@ -12,6 +12,7 @@ from .analytics.formation import detect_formation
 from .analytics.reach import reach_polygon
 from .analytics.suggested import suggested_positions
 from .match_data import PITCH_LENGTH, PITCH_WIDTH, Player
+from .simulation import SimulationEngine
 from tactical_canvas.calibration.layout import create_field_marker_layout
 
 # The rendered piece radius is roughly 1.15m. A 4m centre-to-centre capture
@@ -67,6 +68,7 @@ class AppState:
         self.external_clock_last_ms = 0.0
 
         self.edit_mode = False
+        self.drawing_mode = False
         self.calibration_overlay = False
         self.calibration_layout = [
             placement.to_dict() for placement in create_field_marker_layout()
@@ -97,11 +99,17 @@ class AppState:
         # this is a deliberate choice the coach makes and it sticks: advice is
         # always framed from this team, whoever currently has the ball.
         self.coaching_team = "home"
+        # The active coach persona (playstyle). Reshapes the LLM advice's
+        # emphasis and tone; see server/coaches.py. Like coaching_team, it is a
+        # deliberate, sticky choice rather than something inferred per frame.
+        self.coach_id = coaches.DEFAULT_COACH_ID
 
         self.players: list[Player] = match_data.build_players()
         self.ball = (PITCH_LENGTH / 2, PITCH_WIDTH / 2)
         self.match_id = match_data.current_id()
         self.match_label = match_data.current_label()
+
+        self.simulation = SimulationEngine()
 
         self.grabbed: dict[str, str] = {}
         self.cursors: dict[str, dict] = {}
@@ -158,6 +166,20 @@ class AppState:
         return best
 
     def tick(self, dt: float) -> None:
+        # A running simulation owns the world: it drives the shared Player
+        # objects and the ball, and the match clock is frozen underneath it. Every
+        # overlay and snapshot field keeps working because it reads those same
+        # objects. Bumping the revision each tick keeps live overlays (pitch
+        # control, shadows) repainting against the moving shape.
+        if self.simulation.active:
+            if self.simulation.playing:
+                self.simulation.tick(dt)
+                self.simulation.write_back(self.players)
+                self.ball = self.simulation.ball
+                self.possession = self.simulation.attacking_team
+                self._bump()
+            return
+
         video_driven = (
             self.external_clock_last_ms > 0
             and now_ms() - self.external_clock_last_ms < EXTERNAL_CLOCK_STALE_MS
@@ -219,10 +241,26 @@ class AppState:
         self.coaching_team = "away" if self.coaching_team == "home" else "home"
         self._bump()
 
+    def set_coach(self, coach_id: str) -> bool:
+        """Pick the coach persona (playstyle); return False for an unknown id.
+
+        Bumps the revision so any advice cached from the previous persona is
+        invalidated (the coach-advice cache key carries both the revision and
+        the coach id)."""
+        if coaches.get_coach(coach_id) is None:
+            return False
+        if coach_id != self.coach_id:
+            self.coach_id = coach_id
+            self._bump()
+        return True
+
     def enter_edit_mode(self) -> None:
+        if self.drawing_mode:
+            self.set_drawing_mode(False)
         if not self.edit_mode:
             self.edit_mode = True
             self.playing = False
+            self.cursors.clear()
             self._bump()
 
     def exit_edit_mode(self) -> None:
@@ -231,12 +269,67 @@ class AppState:
             self.grabbed.clear()
             self._bump()
 
+    def start_simulation(self) -> bool:
+        """Freeze the current frame and play out the coached move from it.
+
+        Pauses replay/edit first so the sim seeds from a still shape, then hands
+        the world to the engine. Returns False if there wasn't enough on the
+        pitch to plan a move."""
+        self.playing = False
+        self.edit_mode = False
+        self.grabbed.clear()
+        ok = self.simulation.build_and_start(
+            self.players, self.ball, self.possession, PITCH_LENGTH, PITCH_WIDTH
+        )
+        self._bump()
+        return ok
+
+    def pause_simulation(self) -> None:
+        self.simulation.pause()
+        self._bump()
+
+    def resume_simulation(self) -> None:
+        self.simulation.resume()
+        self._bump()
+
+    def stop_simulation(self) -> None:
+        """End the sim and restore the pitch to the current match frame."""
+        self.simulation.stop()
+        t = self.media_time_ms / 1000.0
+        match_data.advance(self.players, t)
+        self.ball = match_data.ball_position(t)
+        self._bump()
+
+    def set_simulation_rate(self, rate: float) -> None:
+        self.simulation.set_rate(rate)
+        self._bump()
+
     def set_playing(self, playing: bool) -> None:
+        if self.simulation.active:
+            # Starting replay abandons any running simulation.
+            self.stop_simulation()
         self.playing = playing
         if playing:
             self.edit_mode = False
+            self.drawing_mode = False
             self.grabbed.clear()
+            self.cursors.clear()
             self._clear_drawings()
+        self._bump()
+
+    def set_drawing_mode(self, enabled: bool) -> None:
+        """Give the hand tracker exclusive control of the paint tools."""
+        enabled = bool(enabled)
+        if enabled == self.drawing_mode:
+            return
+        for hand in list(self.active_drawings):
+            self._finish_drawing(hand)
+        self.drawing_mode = enabled
+        self.grabbed.clear()
+        self.cursors.clear()
+        if enabled:
+            self.playing = False
+            self.edit_mode = False
         self._bump()
 
     def set_playback_time(self, media_time_ms: float, playing: bool | None = None) -> None:
@@ -268,6 +361,8 @@ class AppState:
                 self.edit_mode = False
                 self.grabbed.clear()
             if self.playing:
+                self.drawing_mode = False
+                self.cursors.clear()
                 self._clear_drawings()
             if was_playing != self.playing:
                 self._bump()
@@ -307,6 +402,7 @@ class AppState:
         self.grabbed.clear()
         self._clear_drawings()
         self.edit_mode = False
+        self.drawing_mode = False
         self.playing = True
         self.playback_rate = 1.0
         self.media_time_ms = 0.0
@@ -327,6 +423,7 @@ class AppState:
         self.grabbed.clear()
         self._clear_drawings()
         self.edit_mode = False
+        self.drawing_mode = False
         self.calibration_overlay = False
         self.offside_overlay = False
         self.compactness_overlay = False
@@ -677,7 +774,7 @@ class AppState:
         self._bump()
 
     def _start_drawing(self, hand: str, bx: float, by: float) -> None:
-        if self.playing:
+        if self.playing or not self.drawing_mode:
             return
         self._finish_drawing(hand)
         stroke = {
@@ -698,7 +795,7 @@ class AppState:
 
     def _move_drawing(self, hand: str, bx: float, by: float) -> None:
         stroke = self.active_drawings.get(hand)
-        if stroke is None or self.playing:
+        if stroke is None or self.playing or not self.drawing_mode:
             return
         points = stroke["points"]
         last_x, last_y = points[-1]
@@ -742,7 +839,7 @@ class AppState:
         return math.hypot(px - nearest_x, py - nearest_y)
 
     def _erase_drawings(self, bx: float, by: float) -> None:
-        if self.playing or not self.drawings:
+        if self.playing or not self.drawing_mode or not self.drawings:
             return
         self._next_drawing_id = max(
             self._next_drawing_id,
@@ -854,15 +951,24 @@ class AppState:
         self.cursors[hand] = {
             "boardX": bx,
             "boardY": by,
-            "grabbing": etype in ("grab_start", "grab_move"),
-            "drawing": not self.playing and etype in ("draw_start", "draw_move"),
-            "erasing": not self.playing and etype in ("erase_start", "erase_move"),
+            "grabbing": not self.drawing_mode and etype in ("grab_start", "grab_move"),
+            "drawing": self.drawing_mode and etype in ("draw_start", "draw_move"),
+            "erasing": self.drawing_mode and etype in ("erase_start", "erase_move"),
             "confidence": evt.get("confidence", 0.0),
             "lastSeenMs": received_at_ms,
             "capturedAtMs": captured_at_ms,
             "inferenceMs": evt.get("inferenceMs", 0.0),
             "captureToServerMs": capture_to_server_ms,
         }
+
+        paint_events = {
+            "draw_start", "draw_move", "draw_end",
+            "erase_start", "erase_move", "erase_end",
+        }
+        if etype in paint_events and not self.drawing_mode:
+            return
+        if etype in ("grab_start", "grab_move", "grab_end") and self.drawing_mode:
+            return
 
         if etype == "draw_start":
             self.drag_end(hand)
@@ -877,11 +983,6 @@ class AppState:
             self._erase_drawings(bx, by)
         elif etype == "erase_move":
             self._erase_drawings(bx, by)
-        elif etype == "clear_drawings":
-            if not self.playing:
-                self.drag_end(hand)
-                self._finish_drawing(hand)
-                self._clear_drawings()
         elif etype in ("grab_start", "grab_move"):
             player_id = self.grabbed.get(hand)
             if player_id:
@@ -955,6 +1056,7 @@ class AppState:
             "revision": self.revision,
             "playing": self.playing,
             "editMode": self.edit_mode,
+            "drawingMode": self.drawing_mode,
             "players": self._players_snapshot(),
             "cursors": self._cursors_snapshot(),
             "drawings": self._drawings_snapshot(),
@@ -974,6 +1076,7 @@ class AppState:
             "mediaTimeMs": round(self.media_time_ms, 1),
             "durationMs": round(match_data.duration_seconds() * 1000.0, 1),
             "editMode": self.edit_mode,
+            "drawingMode": self.drawing_mode,
             "calibrationOverlay": self.calibration_overlay,
             "calibrationLayout": self.calibration_layout,
             "calibration": self.calibration_status,
@@ -990,6 +1093,8 @@ class AppState:
             "shadowSeconds": self.shadow_seconds,
             "possession": self.possession,
             "coachingTeam": self.coaching_team,
+            "activeCoach": self.coach_id,
+            "availableCoaches": coaches.list_coaches(),
             "shadows": self.defender_shadows(),
             "matchId": self.match_id,
             "matchLabel": self.match_label,
@@ -1005,6 +1110,7 @@ class AppState:
             "drawingRevision": self.drawing_revision,
             "vision": self.vision_stats,
             "xt": self._xt_snapshot(),
+            "simulation": self.simulation.snapshot(),
         }
 
     def _xt_snapshot(self) -> dict:

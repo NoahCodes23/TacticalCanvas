@@ -21,12 +21,18 @@ CommandType = Literal[
     "TOGGLE_SHADOWS",           # {}  -- defender reach shadows
     "TOGGLE_PITCH_CONTROL",     # {}  -- arrival/nearest-player control map
     "TOGGLE_FORMATION",         # {}  -- inferred team formations
-    "TOGGLE_SUGGESTED",         # {}  -- ghost circles for suggested positions
-    "SET_COACHING_TEAM",        # {team: 'home'|'away'}
-    "TOGGLE_COACHING_TEAM",     # {}
+    "TOGGLE_SUGGESTED",         # {}  -- suggested off-ball ghost positions
+    "SET_COACHING_TEAM",        # {team}  -- pick the side the coach is on
+    "TOGGLE_COACHING_TEAM",     # {}  -- flip the coached side
+    "SELECT_COACH",             # {coachId}  -- pick the coach persona/playstyle
     "SET_SHADOW_SECONDS",       # {seconds}  -- reach horizon, clamped 0.5-4.0
     "SET_EXPERIMENT",           # {name, enabled?} -- opt-in analytics feature
     "LOAD_MATCH",               # {matchId}  -- switch the active test match
+    "START_SIMULATION",         # {}  -- plan + play out the coached move
+    "PAUSE_SIMULATION",         # {}
+    "RESUME_SIMULATION",        # {}
+    "STOP_SIMULATION",          # {}  -- tear down, hand the pitch back to replay
+    "SET_SIMULATION_RATE",      # {rate}  -- sim speed, clamped 0.25-4.0
     "PING",                     # {t}  -- client clock, echoed back for RTT
 ]
 

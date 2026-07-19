@@ -13,8 +13,6 @@ DRAW_START_FRAMES = 2
 DRAW_RELEASE_FRAMES = 3
 ERASE_START_FRAMES = 2
 ERASE_RELEASE_FRAMES = 3
-CLEAR_HOLD_FRAMES = 12
-DRAW_TIP_GAP_RATIO = 0.36
 ERASE_TIP_GAP_RATIO = 0.42
 DRAW_MIN_EXTENSION_RATIO = 1.35
 POSITION_ALPHA_IDLE = 0.18
@@ -41,14 +39,14 @@ def _point3(landmarks, index: int) -> tuple[float, float, float]:
 def drawing_pointer(
     landmarks, width: int, height: int, world_landmarks=None
 ) -> tuple[tuple[float, float], bool]:
-    """Return the visible two-finger pen tip and whether it is active.
+    """Return the visible index-finger pen tip and whether it is active.
 
     Drawing intentionally ignores palm direction and inferred world depth. If
-    the index and middle fingers visibly form one extended pen in the camera,
-    it should draw whether the palm or the back of the hand faces the lens.
+    the index finger is visibly extended in the camera, it should draw whether
+    the palm or the back of the hand faces the lens.
     """
 
-    draw_pointer, _, draw_pose, _, _ = paint_gestures(
+    draw_pointer, _, draw_pose, _ = paint_gestures(
         landmarks, width, height
     )
     return draw_pointer, draw_pose
@@ -73,20 +71,15 @@ def paint_gestures(
     tuple[float, float],
     bool,
     bool,
-    bool,
 ]:
-    """Return pen/eraser pointers and visible 2/3/5-finger tool poses."""
+    """Return pointers and visible one-finger pen/two-finger eraser poses."""
 
     index_tip = _pixel(landmarks, 8, width, height)
     middle_tip = _pixel(landmarks, 12, width, height)
-    ring_tip = _pixel(landmarks, 16, width, height)
-    draw_pointer = (
+    draw_pointer = index_tip
+    erase_pointer = (
         (index_tip[0] + middle_tip[0]) / 2.0,
         (index_tip[1] + middle_tip[1]) / 2.0,
-    )
-    erase_pointer = (
-        (index_tip[0] + middle_tip[0] + ring_tip[0]) / 3.0,
-        (index_tip[1] + middle_tip[1] + ring_tip[1]) / 3.0,
     )
 
     wrist = _pixel(landmarks, 0, width, height)
@@ -103,42 +96,25 @@ def paint_gestures(
     middle_extended = _finger_extended(landmarks, 9, 10, 12, width, height)
     ring_extended = _finger_extended(landmarks, 13, 14, 16, width, height)
     pinky_extended = _finger_extended(landmarks, 17, 18, 20, width, height)
-    thumb_tip = _pixel(landmarks, 4, width, height)
-    thumb_ip = _pixel(landmarks, 3, width, height)
-    thumb_extended = (
-        math.dist(thumb_tip, index_mcp) / palm_size >= 0.42
-        and math.dist(thumb_tip, thumb_ip) / palm_size >= 0.15
-    )
     index_middle_close = (
-        math.dist(index_tip, middle_tip) / palm_size <= DRAW_TIP_GAP_RATIO
-    )
-    middle_ring_close = (
-        math.dist(middle_tip, ring_tip) / palm_size <= ERASE_TIP_GAP_RATIO
+        math.dist(index_tip, middle_tip) / palm_size <= ERASE_TIP_GAP_RATIO
     )
 
-    clear_pose = all((
-        thumb_extended,
-        index_extended,
-        middle_extended,
-        ring_extended,
-        pinky_extended,
-    ))
     erase_pose = (
-        not clear_pose
-        and index_extended
+        index_extended
         and middle_extended
-        and ring_extended
+        and not ring_extended
+        and not pinky_extended
         and index_middle_close
-        and middle_ring_close
     )
     draw_pose = (
         not erase_pose
-        and not clear_pose
         and index_extended
-        and middle_extended
-        and index_middle_close
+        and not middle_extended
+        and not ring_extended
+        and not pinky_extended
     )
-    return draw_pointer, erase_pointer, draw_pose, erase_pose, clear_pose
+    return draw_pointer, erase_pointer, draw_pose, erase_pose
 
 
 def pinch_pointer(
@@ -197,8 +173,6 @@ class HandTracker:
         self.draw_release_pending = 0
         self.erase_pending = 0
         self.erase_release_pending = 0
-        self.clear_pending = 0
-        self.clear_latched = False
         self.missing = 0
         self.board: tuple[float, float] | None = None
         self.filtered_board: tuple[float, float] | None = None
@@ -293,34 +267,10 @@ class HandTracker:
         world_pinch_ratio: float | None = None,
         draw_pose: bool = False,
         erase_pose: bool = False,
-        clear_pose: bool = False,
+        paint_mode: bool = False,
         prediction_horizon_s: float = 0.0,
     ) -> str | None:
         self._update_position(board_pt, now, prediction_horizon_s)
-
-        if clear_pose:
-            if self.drawing:
-                self.drawing = False
-                self.draw_pending = 0
-                return "draw_end"
-            if self.erasing:
-                self.erasing = False
-                self.erase_pending = 0
-                return "erase_end"
-            self.draw_pending = 0
-            self.erase_pending = 0
-            if not self.clear_latched:
-                self.clear_pending += 1
-                if self.clear_pending >= CLEAR_HOLD_FRAMES:
-                    self.clear_pending = 0
-                    self.clear_latched = True
-                    self.grabbing = False
-                    self.pending = 0
-                    return "clear_drawings"
-            return "hover"
-
-        self.clear_pending = 0
-        self.clear_latched = False
 
         if erase_pose:
             if self.drawing:
@@ -372,6 +322,14 @@ class HandTracker:
                 return "draw_end"
             return "draw_move"
         self.draw_release_pending = 0
+
+        # Paint mode owns pointing completely. An open hand or a malformed
+        # paint pose must never fall through to the normal pinch/grab machine.
+        if paint_mode:
+            self.grabbing = False
+            self.pending = 0
+            self.pinch_ratio = pinch_ratio
+            return "hover"
 
         self.pinch_ratio = pinch_ratio
         wants = self.grabbing

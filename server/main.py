@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import ingest, match_data
+from . import coaches, ingest, match_data
 from .coach import CoachServiceError, request_coach_advice, resolve_api_key, resolve_model
 from .protocol import PROTOCOL_VERSION, Envelope, server_message
 from .state import AppState, now_ms
@@ -180,16 +180,17 @@ async def calibration_marker(marker_id: int):
     )
 
 
-def send_vision_control(command_type: str) -> bool:
+def send_vision_control(command_type: str, **details) -> bool:
     if vision_control_queue is None:
         return False
+    message = {"type": command_type, **details}
     try:
-        vision_control_queue.put_nowait({"type": command_type})
+        vision_control_queue.put_nowait(message)
         return True
     except queue_mod.Full:
         try:
             vision_control_queue.get_nowait()
-            vision_control_queue.put_nowait({"type": command_type})
+            vision_control_queue.put_nowait(message)
             return True
         except (queue_mod.Empty, queue_mod.Full):
             return False
@@ -207,7 +208,11 @@ async def coach_advice():
         raise HTTPException(503, "No coach API key configured. Set OPENAI_API_KEY in .env.")
 
     model = resolve_model()
-    cache_key = (state.match_id, state.frame_index, state.revision, model, state.coaching_team)
+    coach_id = state.coach_id
+    cache_key = (
+        state.match_id, state.frame_index, state.revision, model,
+        state.coaching_team, coach_id,
+    )
     cached = coach_advice_cache.get(cache_key)
     if cached is not None:
         return JSONResponse({**cached, "cached": True})
@@ -223,6 +228,9 @@ async def coach_advice():
         coaching_team = state.coaching_team
         frames = await asyncio.to_thread(state.analyze_coach_frames, raw_frames, coaching_team)
         recent_events = match_data.recent_events(state.media_time_ms / 1000.0, 3)
+        # The persona is captured now, alongside the frame window, so the cache
+        # entry stays consistent even if the coach flips personas mid-request.
+        persona = coaches.get_coach(coach_id)
         try:
             result = await request_coach_advice(
                 frames,
@@ -230,6 +238,8 @@ async def coach_advice():
                 api_key=api_key,
                 model=model,
                 recent_events=recent_events,
+                style_prompt=persona.style_prompt if persona else None,
+                persona_name=persona.name if persona else None,
             )
         except CoachServiceError as error:
             raise HTTPException(502, str(error)) from error
@@ -242,6 +252,8 @@ async def coach_advice():
             "revision": state.revision,
             "matchId": state.match_id,
             "coachingTeam": coaching_team,
+            "coachId": coach_id,
+            "coachName": persona.name if persona else coach_id,
         }
         coach_advice_cache[cache_key] = response
         # Bound memory while keeping recent paid responses reusable.
@@ -497,7 +509,19 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         return
 
     if t == "SET_PLAYING":
-        state.set_playing(bool(p.get("playing", True)))
+        playing = bool(p.get("playing", True))
+        state.set_playing(playing)
+        if playing:
+            send_vision_control("set_drawing_mode", enabled=False)
+    elif t == "SET_DRAWING_MODE":
+        enabled = p.get("enabled")
+        if not isinstance(enabled, bool):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": "enabled must be true or false"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+        state.set_drawing_mode(enabled)
+        send_vision_control("set_drawing_mode", enabled=enabled)
     elif t == "SET_PLAYBACK_TIME":
         # Fires many times a second from the video's frame callback. We still
         # broadcast a snapshot each call (matches every other command) --
@@ -513,6 +537,8 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
             return
         playing_val = p.get("playing")
         state.set_playback_time(mt, playing_val if isinstance(playing_val, bool) else None)
+        if playing_val is True:
+            send_vision_control("set_drawing_mode", enabled=False)
     elif t == "SEEK_TO":
         try:
             mt = float(p.get("mediaTimeMs", 0.0))
@@ -532,10 +558,12 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
             return
     elif t == "ENTER_EDIT_MODE":
         state.enter_edit_mode()
+        send_vision_control("set_drawing_mode", enabled=False)
     elif t == "EXIT_EDIT_MODE":
         state.exit_edit_mode()
     elif t == "RESET_SCENARIO":
         state.reset_scenario()
+        send_vision_control("set_drawing_mode", enabled=False)
     elif t == "LOAD_MATCH":
         match_id = p.get("matchId")
         if not isinstance(match_id, str) or not state.load_match(match_id):
@@ -543,6 +571,7 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
                 "ERROR", {"reason": f"could not load match {match_id!r}"},
                 state.scenario_id, state.next_sequence(), now_ms()))
             return
+        send_vision_control("set_drawing_mode", enabled=False)
     elif t in ("TOGGLE_CALIBRATION", "START_CALIBRATION"):
         if t == "TOGGLE_CALIBRATION" and state.calibration_overlay:
             state.cancel_calibration()
@@ -573,6 +602,13 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
             return
     elif t == "TOGGLE_COACHING_TEAM":
         state.toggle_coaching_team()
+    elif t == "SELECT_COACH":
+        coach_id = p.get("coachId")
+        if not isinstance(coach_id, str) or not state.set_coach(coach_id):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"invalid coach {coach_id!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
     elif t == "TOGGLE_SUGGESTED":
         state.toggle_suggested()
     elif t == "SET_EXPERIMENT":
@@ -590,6 +626,26 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         except (TypeError, ValueError):
             await ws.send_json(server_message(
                 "ERROR", {"reason": f"bad seconds {p.get('seconds')!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+    elif t == "START_SIMULATION":
+        if not state.start_simulation():
+            await ws.send_json(server_message(
+                "ERROR", {"reason": "not enough players to plan a simulation"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+    elif t == "PAUSE_SIMULATION":
+        state.pause_simulation()
+    elif t == "RESUME_SIMULATION":
+        state.resume_simulation()
+    elif t == "STOP_SIMULATION":
+        state.stop_simulation()
+    elif t == "SET_SIMULATION_RATE":
+        try:
+            state.set_simulation_rate(float(p.get("rate", 1.0)))
+        except (TypeError, ValueError):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": f"bad rate {p.get('rate')!r}"},
                 state.scenario_id, state.next_sequence(), now_ms()))
             return
     elif t == "DRAG_PLAYER_START":

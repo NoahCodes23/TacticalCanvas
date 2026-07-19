@@ -1,7 +1,14 @@
 import json
 import unittest
 
-from server.coach import DEFAULT_MODEL, SYSTEM_PROMPT, build_messages, build_request_body
+from server import coaches
+from server.coach import (
+    DEFAULT_MODEL,
+    SYSTEM_PROMPT,
+    build_messages,
+    build_request_body,
+    compose_system_prompt,
+)
 from server.state import (
     AppState,
     COACH_RAW_HISTORY_FRAMES,
@@ -75,6 +82,52 @@ class CoachAdviceTests(unittest.TestCase):
             [], "Test Match", DEFAULT_MODEL, base_url="https://openrouter.ai/api/v1"
         )
         self.assertEqual(body["provider"], {"zdr": True})
+
+
+class CoachPersonaTests(unittest.TestCase):
+    def test_default_prompt_is_unchanged_without_a_persona(self):
+        self.assertEqual(compose_system_prompt(), SYSTEM_PROMPT)
+
+    def test_persona_prompt_appends_style_but_keeps_safety_rules(self):
+        coach = coaches.get_coach("aggressive")
+        prompt = compose_system_prompt(coach.style_prompt, coach.name)
+        # Base prompt (with its facts-whitelist rule) is preserved verbatim...
+        self.assertTrue(prompt.startswith(SYSTEM_PROMPT))
+        self.assertIn(coach.name, prompt)
+        self.assertIn("Hunt the ball high", prompt)
+        # ...and the numbers guardrail is re-asserted on top of the persona.
+        self.assertIn('"facts"', prompt)
+
+    def test_persona_flows_through_build_messages(self):
+        coach = coaches.get_coach("defensive")
+        messages = build_messages(
+            [{"frameIndex": 1}], "Test Match",
+            style_prompt=coach.style_prompt, persona_name=coach.name,
+        )
+        self.assertIn(coach.name, messages[0]["content"])
+        self.assertIn("defence-first", messages[0]["content"])
+
+    def test_public_coach_list_hides_style_prompt(self):
+        public = coaches.list_coaches()
+        self.assertEqual(public[0]["id"], coaches.DEFAULT_COACH_ID)
+        for entry in public:
+            self.assertNotIn("style_prompt", entry)
+            self.assertEqual(set(entry), {"id", "name", "emoji", "tagline", "accent"})
+
+    def test_state_tracks_and_validates_the_active_coach(self):
+        state = AppState()
+        self.assertEqual(state.coach_id, coaches.DEFAULT_COACH_ID)
+        snap = state.snapshot()
+        self.assertEqual(snap["activeCoach"], coaches.DEFAULT_COACH_ID)
+        self.assertEqual(snap["availableCoaches"], coaches.list_coaches())
+
+        before = state.revision
+        self.assertTrue(state.set_coach("counter"))
+        self.assertEqual(state.coach_id, "counter")
+        self.assertGreater(state.revision, before)   # invalidates cached advice
+
+        self.assertFalse(state.set_coach("nonexistent"))
+        self.assertEqual(state.coach_id, "counter")
 
 
 if __name__ == "__main__":
