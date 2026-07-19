@@ -310,6 +310,7 @@
 
       <h2>Playback</h2>
       <button id="play" class="primary">⏸ Pause &amp; Edit</button>
+      <button id="drawing-mode">Drawing mode</button>
       <input id="scrub" type="range" min="0" max="4000" value="0" step="1"
              aria-label="Seek to a moment in the match">
       <div id="scrub-times"><span id="scrub-cur">0:00</span><span id="scrub-dur">0:00</span></div>
@@ -451,12 +452,10 @@
         fingertips at all times. Brief tracking gaps are tolerated, and a nearby piece
         snaps to the pinch when the cursor is about one piece-width away. Grabbing
         auto-pauses.<br><br>
-        <b>Draw:</b> while paused, hold your extended index and middle fingertips
-        together, with either side of the hand facing the camera. Move the red pen
-        cursor to paint freehand lines, circles, or shapes. Separate or lower the
-        fingers to end one stroke. Hold index, middle, and ring together to erase
-        wherever the white eraser passes. Hold all five fingers open briefly to clear
-        every drawing. Drawings also clear when playback resumes.<br><br>
+        <b>Draw:</b> switch on <b>Drawing mode</b>, then point with one extended
+        index finger to paint red lines, circles, or shapes. Hold up adjacent index
+        and middle fingers to erase with the white eraser. Player grabbing is disabled
+        in this mode. Drawings clear when playback resumes.<br><br>
         <b>Mouse:</b> drag players on this pitch — always works, camera or not.<br><br>
         <b>Calibrate:</b> open the projector on the field, then press <b>Calibrate field</b>.
         Keep the camera and projector still while all six field markers are collected.
@@ -742,6 +741,9 @@
         conn.send("SET_PLAYING", { playing: !state?.playing });
       }
     };
+    $("drawing-mode").onclick = () => conn.send("SET_DRAWING_MODE", {
+      enabled: !state?.drawingMode,
+    });
     $("reset").onclick = () => {
       clearCoachAdvice();
       conn.send("RESET_SCENARIO");
@@ -844,6 +846,11 @@
       set_playing: ({ playing }) => {
         conn.send("SET_PLAYING", { playing: !!playing });
         return `Replay ${playing ? "resumed" : "paused"}.`;
+      },
+
+      set_drawing_mode: ({ enabled }) => {
+        conn.send("SET_DRAWING_MODE", { enabled: !!enabled });
+        return `Drawing mode ${enabled ? "on" : "off"}.`;
       },
 
       enter_edit_mode: () => {
@@ -1277,9 +1284,11 @@
       $("calib").className = calibration.active ? "warn" : "";
       $("d-curs").textContent = (state.cursors || [])
         .map((c) => `${c.handId}${c.grabbing ? "*" : ""}`).join(" ") || "none";
-      $("d-mode").textContent = state.editMode ? "EDIT (frozen)" : state.playing ? "playing" : "paused";
+      $("d-mode").textContent = state.drawingMode ? "DRAWING" : state.editMode ? "EDIT (frozen)" : state.playing ? "playing" : "paused";
       $("play").textContent = state.playing ? "⏸ Pause & Edit" : "▶ Resume";
       $("play").className = state.playing ? "primary" : "warn";
+      $("drawing-mode").textContent = state.drawingMode ? "Exit drawing mode" : "Drawing mode";
+      $("drawing-mode").className = state.drawingMode ? "primary" : "";
       // Advice belongs to the frame it was generated for. Once the board moves
       // on -- a resume, a drag, a different match -- it is stale, so drop it
       // rather than leave the room reading advice about a moment that is gone.

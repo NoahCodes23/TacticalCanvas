@@ -180,16 +180,17 @@ async def calibration_marker(marker_id: int):
     )
 
 
-def send_vision_control(command_type: str) -> bool:
+def send_vision_control(command_type: str, **details) -> bool:
     if vision_control_queue is None:
         return False
+    message = {"type": command_type, **details}
     try:
-        vision_control_queue.put_nowait({"type": command_type})
+        vision_control_queue.put_nowait(message)
         return True
     except queue_mod.Full:
         try:
             vision_control_queue.get_nowait()
-            vision_control_queue.put_nowait({"type": command_type})
+            vision_control_queue.put_nowait(message)
             return True
         except (queue_mod.Empty, queue_mod.Full):
             return False
@@ -497,7 +498,19 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         return
 
     if t == "SET_PLAYING":
-        state.set_playing(bool(p.get("playing", True)))
+        playing = bool(p.get("playing", True))
+        state.set_playing(playing)
+        if playing:
+            send_vision_control("set_drawing_mode", enabled=False)
+    elif t == "SET_DRAWING_MODE":
+        enabled = p.get("enabled")
+        if not isinstance(enabled, bool):
+            await ws.send_json(server_message(
+                "ERROR", {"reason": "enabled must be true or false"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+        state.set_drawing_mode(enabled)
+        send_vision_control("set_drawing_mode", enabled=enabled)
     elif t == "SET_PLAYBACK_TIME":
         # Fires many times a second from the video's frame callback. We still
         # broadcast a snapshot each call (matches every other command) --
@@ -513,6 +526,8 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
             return
         playing_val = p.get("playing")
         state.set_playback_time(mt, playing_val if isinstance(playing_val, bool) else None)
+        if playing_val is True:
+            send_vision_control("set_drawing_mode", enabled=False)
     elif t == "SEEK_TO":
         try:
             mt = float(p.get("mediaTimeMs", 0.0))
@@ -532,10 +547,12 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
             return
     elif t == "ENTER_EDIT_MODE":
         state.enter_edit_mode()
+        send_vision_control("set_drawing_mode", enabled=False)
     elif t == "EXIT_EDIT_MODE":
         state.exit_edit_mode()
     elif t == "RESET_SCENARIO":
         state.reset_scenario()
+        send_vision_control("set_drawing_mode", enabled=False)
     elif t == "LOAD_MATCH":
         match_id = p.get("matchId")
         if not isinstance(match_id, str) or not state.load_match(match_id):
@@ -543,6 +560,7 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
                 "ERROR", {"reason": f"could not load match {match_id!r}"},
                 state.scenario_id, state.next_sequence(), now_ms()))
             return
+        send_vision_control("set_drawing_mode", enabled=False)
     elif t in ("TOGGLE_CALIBRATION", "START_CALIBRATION"):
         if t == "TOGGLE_CALIBRATION" and state.calibration_overlay:
             state.cancel_calibration()

@@ -67,6 +67,7 @@ class AppState:
         self.external_clock_last_ms = 0.0
 
         self.edit_mode = False
+        self.drawing_mode = False
         self.calibration_overlay = False
         self.calibration_layout = [
             placement.to_dict() for placement in create_field_marker_layout()
@@ -220,9 +221,12 @@ class AppState:
         self._bump()
 
     def enter_edit_mode(self) -> None:
+        if self.drawing_mode:
+            self.set_drawing_mode(False)
         if not self.edit_mode:
             self.edit_mode = True
             self.playing = False
+            self.cursors.clear()
             self._bump()
 
     def exit_edit_mode(self) -> None:
@@ -235,8 +239,25 @@ class AppState:
         self.playing = playing
         if playing:
             self.edit_mode = False
+            self.drawing_mode = False
             self.grabbed.clear()
+            self.cursors.clear()
             self._clear_drawings()
+        self._bump()
+
+    def set_drawing_mode(self, enabled: bool) -> None:
+        """Give the hand tracker exclusive control of the paint tools."""
+        enabled = bool(enabled)
+        if enabled == self.drawing_mode:
+            return
+        for hand in list(self.active_drawings):
+            self._finish_drawing(hand)
+        self.drawing_mode = enabled
+        self.grabbed.clear()
+        self.cursors.clear()
+        if enabled:
+            self.playing = False
+            self.edit_mode = False
         self._bump()
 
     def set_playback_time(self, media_time_ms: float, playing: bool | None = None) -> None:
@@ -268,6 +289,8 @@ class AppState:
                 self.edit_mode = False
                 self.grabbed.clear()
             if self.playing:
+                self.drawing_mode = False
+                self.cursors.clear()
                 self._clear_drawings()
             if was_playing != self.playing:
                 self._bump()
@@ -307,6 +330,7 @@ class AppState:
         self.grabbed.clear()
         self._clear_drawings()
         self.edit_mode = False
+        self.drawing_mode = False
         self.playing = True
         self.playback_rate = 1.0
         self.media_time_ms = 0.0
@@ -327,6 +351,7 @@ class AppState:
         self.grabbed.clear()
         self._clear_drawings()
         self.edit_mode = False
+        self.drawing_mode = False
         self.calibration_overlay = False
         self.offside_overlay = False
         self.compactness_overlay = False
@@ -677,7 +702,7 @@ class AppState:
         self._bump()
 
     def _start_drawing(self, hand: str, bx: float, by: float) -> None:
-        if self.playing:
+        if self.playing or not self.drawing_mode:
             return
         self._finish_drawing(hand)
         stroke = {
@@ -698,7 +723,7 @@ class AppState:
 
     def _move_drawing(self, hand: str, bx: float, by: float) -> None:
         stroke = self.active_drawings.get(hand)
-        if stroke is None or self.playing:
+        if stroke is None or self.playing or not self.drawing_mode:
             return
         points = stroke["points"]
         last_x, last_y = points[-1]
@@ -742,7 +767,7 @@ class AppState:
         return math.hypot(px - nearest_x, py - nearest_y)
 
     def _erase_drawings(self, bx: float, by: float) -> None:
-        if self.playing or not self.drawings:
+        if self.playing or not self.drawing_mode or not self.drawings:
             return
         self._next_drawing_id = max(
             self._next_drawing_id,
@@ -854,15 +879,24 @@ class AppState:
         self.cursors[hand] = {
             "boardX": bx,
             "boardY": by,
-            "grabbing": etype in ("grab_start", "grab_move"),
-            "drawing": not self.playing and etype in ("draw_start", "draw_move"),
-            "erasing": not self.playing and etype in ("erase_start", "erase_move"),
+            "grabbing": not self.drawing_mode and etype in ("grab_start", "grab_move"),
+            "drawing": self.drawing_mode and etype in ("draw_start", "draw_move"),
+            "erasing": self.drawing_mode and etype in ("erase_start", "erase_move"),
             "confidence": evt.get("confidence", 0.0),
             "lastSeenMs": received_at_ms,
             "capturedAtMs": captured_at_ms,
             "inferenceMs": evt.get("inferenceMs", 0.0),
             "captureToServerMs": capture_to_server_ms,
         }
+
+        paint_events = {
+            "draw_start", "draw_move", "draw_end",
+            "erase_start", "erase_move", "erase_end",
+        }
+        if etype in paint_events and not self.drawing_mode:
+            return
+        if etype in ("grab_start", "grab_move", "grab_end") and self.drawing_mode:
+            return
 
         if etype == "draw_start":
             self.drag_end(hand)
@@ -877,11 +911,6 @@ class AppState:
             self._erase_drawings(bx, by)
         elif etype == "erase_move":
             self._erase_drawings(bx, by)
-        elif etype == "clear_drawings":
-            if not self.playing:
-                self.drag_end(hand)
-                self._finish_drawing(hand)
-                self._clear_drawings()
         elif etype in ("grab_start", "grab_move"):
             player_id = self.grabbed.get(hand)
             if player_id:
@@ -955,6 +984,7 @@ class AppState:
             "revision": self.revision,
             "playing": self.playing,
             "editMode": self.edit_mode,
+            "drawingMode": self.drawing_mode,
             "players": self._players_snapshot(),
             "cursors": self._cursors_snapshot(),
             "drawings": self._drawings_snapshot(),
@@ -974,6 +1004,7 @@ class AppState:
             "mediaTimeMs": round(self.media_time_ms, 1),
             "durationMs": round(match_data.duration_seconds() * 1000.0, 1),
             "editMode": self.edit_mode,
+            "drawingMode": self.drawing_mode,
             "calibrationOverlay": self.calibration_overlay,
             "calibrationLayout": self.calibration_layout,
             "calibration": self.calibration_status,
