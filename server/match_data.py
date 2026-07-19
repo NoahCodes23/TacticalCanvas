@@ -176,13 +176,18 @@ class MatchTracks:
         self.n_players = int(positions.shape[1])
         self.duration = self.n_frames / self.fps
 
+        # Must be initialised before the events below: scoring a SHOT needs the
+        # attack direction, so _xg_for_shot reaches _home_attacks_positive on the
+        # very first event. Assigning this afterwards left the attribute missing
+        # for any match whose events include a shot.
+        self._attack_dir: np.ndarray | None = None  # built on first stats call
+
         # Display-ready events, sorted by start time, with a parallel time list
         # for bisecting "everything up to the current replay clock".
         raw = sorted(events or [], key=lambda e: float(e.get("t", 0.0)))
         self._raw_events = raw
         self.events = [_format_event(e, self._xg_for_shot(e)) for e in raw]
         self._event_times = [e["t"] for e in self.events]
-        self._attack_dir: np.ndarray | None = None  # built on first stats call
 
     @classmethod
     def load(cls, path: Path, match_id: str) -> "MatchTracks":

@@ -887,6 +887,34 @@
         return await requestCoachAdvice();
       },
 
+      // --- Playback --------------------------------------------------------
+      // Routed through `clock`, not raw commands: when a video is attached it
+      // is the master clock, so a spoken "go back ten seconds" has to move the
+      // <video> element and let the frame callback carry the board with it.
+      set_playback_speed: ({ rate }) => {
+        const r = Math.max(0.1, Math.min(Number(rate) || 1, 4));
+        clock.setRate(r);
+        return `Playing at ${r}x.`;
+      },
+
+      step_playback_speed: ({ direction }) => {
+        const ladder = [0.25, 0.5, 1, 1.5, 2, 3, 4];
+        const current = clock.rate || 1;
+        const faster = String(direction || "").toLowerCase().startsWith("f");
+        const next = faster
+          ? ladder.find((s) => s > current + 1e-6) ?? ladder[ladder.length - 1]
+          : [...ladder].reverse().find((s) => s < current - 1e-6) ?? ladder[0];
+        clock.setRate(next);
+        return `Playing at ${next}x.`;
+      },
+
+      skip_time: ({ seconds }) => {
+        const delta = Number(seconds);
+        const step = Number.isFinite(delta) && delta !== 0 ? delta : 10;
+        clock.nudge(step * 1000);
+        return `Skipped ${step > 0 ? "forward" : "back"} ${Math.abs(step)} seconds.`;
+      },
+
       // --- Board views -----------------------------------------------------
       // These must mirror mcp_server.py tool-for-tool. The agent is given the
       // MCP tool list, but in the browser the *handlers* live here, so a tool
