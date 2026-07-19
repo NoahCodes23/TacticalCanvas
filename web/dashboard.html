@@ -86,9 +86,9 @@
     /* Coach persona carousel. A revolving picker of playstyles (aggressive,
        defensive, ...) that reshape the LLM coach's advice. The accent colour
        comes from the active persona and is applied inline in JS. */
-    #coach-carousel { display: flex; align-items: center; gap: 8px; margin: 0 0 8px;
-                      padding: 8px; border: 1px solid #334155; border-radius: 8px;
-                      background: #0f1622; transition: border-color .18s; }
+    #coach-carousel { position: relative; display: flex; align-items: center; gap: 8px;
+                      margin: 0 0 8px; padding: 8px; border: 1px solid #334155;
+                      border-radius: 8px; background: #0f1622; transition: border-color .18s; }
     #coach-carousel .arrow { flex: none; width: 28px; padding: 6px 0; margin: 0;
                              text-align: center; font-size: 15px; line-height: 1;
                              border-radius: 6px; background: #16212c; color: #c9d6e3; }
@@ -100,12 +100,19 @@
                   transition: color .18s; }
     #coach-tagline { margin-top: 1px; color: #7d8fa1; font-size: 10px; line-height: 1.3;
                      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    /* Compact by default; reveal the full playstyle description when the coach
-       hovers (or keyboard-focuses) the carousel. Wrapping grows the card, so
-       the dots below shift down -- expected for an expand. */
-    #coach-carousel:hover #coach-tagline,
-    #coach-carousel:focus-within #coach-tagline {
-      white-space: normal; overflow: visible; }
+    /* Full playstyle description as a floating popover: absolutely positioned
+       under the card so it overlays the content below instead of pushing it
+       down. Shown on hover or keyboard focus. */
+    #coach-tip { position: absolute; left: 0; right: 0; top: calc(100% + 5px); z-index: 20;
+                 padding: 8px 10px; border-radius: 7px; background: #0d1622;
+                 border: 1px solid #334155; box-shadow: 0 8px 22px #000a;
+                 color: #c9d6e3; font-size: 10px; line-height: 1.4; text-align: left;
+                 opacity: 0; visibility: hidden; transform: translateY(-3px);
+                 transition: opacity .14s, transform .14s; pointer-events: none; }
+    #coach-tip b { display: block; margin-bottom: 2px; font-size: 11px; }
+    #coach-carousel:hover #coach-tip,
+    #coach-carousel:focus-within #coach-tip {
+      opacity: 1; visibility: visible; transform: none; }
     #coach-dots { display: flex; justify-content: center; gap: 5px; margin: -2px 0 10px; }
     #coach-dots i { width: 6px; height: 6px; border-radius: 50%; background: #2a3947;
                     transition: background .18s, transform .18s; }
@@ -355,6 +362,7 @@
           </div>
         </div>
         <button id="coach-next" class="arrow" aria-label="Next coach">›</button>
+        <div id="coach-tip" role="tooltip"></div>
       </div>
       <div id="coach-dots"></div>
       <div id="team-picker" class="home">
@@ -799,9 +807,15 @@
       $("coach-name").textContent = coach.name;
       $("coach-name").style.color = coach.accent;
       $("coach-tagline").textContent = coach.tagline;
-      // Native tooltip too: full text on hover even before the expand, and it
-      // covers keyboard / screen-reader users who never trigger :hover.
-      $("coach-carousel").title = `${coach.name} — ${coach.tagline}`;
+      // Floating popover holds the full, untruncated description. Real DOM text
+      // (not a title attr), so :focus-within reveals it for keyboard users too.
+      const tip = $("coach-tip");
+      tip.replaceChildren(
+        Object.assign(document.createElement("b"), {
+          textContent: coach.name, style: `color:${coach.accent}`,
+        }),
+        document.createTextNode(coach.tagline),
+      );
       $("coach-carousel").style.borderColor = coach.accent;
       const dotsEl = $("coach-dots");
       if (coachDotCount !== list.length) {
