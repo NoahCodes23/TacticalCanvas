@@ -265,6 +265,7 @@ def _score_pass(
     pitch_length: float,
     pitch_width: float,
     receiver_position: tuple[float, float] | None = None,
+    ignore_offside: bool = False,
 ) -> dict[str, Any]:
     team = carrier.team
     rx, ry = receiver_position or (float(receiver.x), float(receiver.y))
@@ -297,7 +298,10 @@ def _score_pass(
         + 1.25 * (destination_control - 0.5)
         - 0.012 * abs(ry - cy)
     )
-    completion = 0.02 if is_offside else _clip(_sigmoid(logit), 0.03, 0.98)
+    completion = (
+        0.02 if is_offside and not ignore_offside
+        else _clip(_sigmoid(logit), 0.03, 0.98)
+    )
 
     turnover_cost = 0.035 + 0.32 * origin_xt + 0.018 * max(progress, 0.0) / pitch_length
     action_reward = (
@@ -336,6 +340,33 @@ def _score_pass(
         "features": features,
         "explanation": _pass_explanation(features),
     }
+
+
+def pass_completion_probability(
+    players: list[Any],
+    carrier: Any,
+    receiver: Any,
+    ball: tuple[float, float],
+    direction: int,
+    pitch_length: float,
+    pitch_width: float,
+) -> float:
+    """Completion probability for one pass, from the same scorer ``analyze`` uses.
+
+    Public entry point so other modules (the simulation planner) can price a
+    pass without re-deriving the whole analysis snapshot — one formula, one
+    number, everywhere.
+
+    The offside override is skipped here on purpose: the simulation's world has
+    no offside rule (attackers legitimately drift beyond the line mid-move), so
+    pricing a sim pass at the flat offside penalty would contradict the play
+    the viewer just watched. The logistic itself is unchanged.
+    """
+    scored = _score_pass(
+        players, carrier, receiver, ball, direction, pitch_length, pitch_width,
+        ignore_offside=True,
+    )
+    return float(scored["completionProbability"])
 
 
 def _convex_hull_area(points: list[tuple[float, float]]) -> float:

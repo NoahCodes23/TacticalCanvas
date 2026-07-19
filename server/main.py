@@ -262,6 +262,23 @@ async def coach_advice():
         return JSONResponse(response)
 
 
+@app.get("/api/simulation/export")
+async def export_simulation():
+    """Download the currently recorded simulated move as JSON.
+
+    The trajectory buffer lives for the lifetime of the sim (it clears on
+    STOP_SIMULATION), so exporting works during play, while paused/scrubbed,
+    and after the move has resolved — but not once the sim is stopped."""
+    payload = state.export_simulation()
+    if payload is None:
+        raise HTTPException(409, "No simulation is running; start one before exporting.")
+    name = f"tacticalcanvas-move-{int(time.time())}.json"
+    return JSONResponse(
+        payload,
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
 @app.get("/api/voice-token")
 async def voice_token():
     """Mint short-lived credentials so the browser can open a voice session.
@@ -646,6 +663,24 @@ async def handle_command(ws: WebSocket, env: Envelope) -> None:
         except (TypeError, ValueError):
             await ws.send_json(server_message(
                 "ERROR", {"reason": f"bad rate {p.get('rate')!r}"},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+    elif t == "SIM_SEEK_STEP":
+        idx = p.get("index")
+        if isinstance(idx, bool) or not isinstance(idx, int):
+            err = f"bad step index {idx!r}"
+        else:
+            err = state.seek_simulation_step(idx)
+        if err is not None:
+            await ws.send_json(server_message(
+                "ERROR", {"reason": err},
+                state.scenario_id, state.next_sequence(), now_ms()))
+            return
+    elif t in ("SIM_STEP_FORWARD", "SIM_STEP_BACK"):
+        err = state.step_simulation(1 if t == "SIM_STEP_FORWARD" else -1)
+        if err is not None:
+            await ws.send_json(server_message(
+                "ERROR", {"reason": err},
                 state.scenario_id, state.next_sequence(), now_ms()))
             return
     elif t == "DRAG_PLAYER_START":

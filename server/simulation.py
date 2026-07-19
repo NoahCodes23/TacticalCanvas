@@ -31,7 +31,8 @@ from __future__ import annotations
 import math
 from typing import Any, Iterable
 
-from .analytics.experimental import attacking_direction
+from .analytics.experimental import attacking_direction, pass_completion_probability
+from .analytics.xg import xg_value
 from .analytics.xt import xt_delta
 
 # --- tuning -----------------------------------------------------------------
@@ -52,6 +53,9 @@ GOAL_HALF_WIDTH_M = 3.66    # 7.32 m goal
 PLAN_MAX_STEPS = 6
 SETTLE_S = 0.28             # ball rests at a receiver's feet before the next pass
 PASS_LEAD_M = 3.0           # lead the receiver into space, so the ball is met
+# A move lasts seconds; at 60 Hz this cap is minutes of recording, so it exists
+# only as a guard against a sim someone forgot to stop.
+MAX_TRAJECTORY_FRAMES = 20_000
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -100,6 +104,13 @@ class SimulationEngine:
         self._carrier_number: int | None = None
         self._start_progress = 0.0
         self._stats = self._empty_stats()
+        # Recorded playback: every tick appends one frame, and each step's
+        # start captures a full engine checkpoint. Seeking restores a
+        # checkpoint — never reverse physics.
+        self.trajectory: list[dict] = []
+        self._checkpoints: dict[int, dict] = {}
+        self._pending_truncate: int | None = None
+        self._sequence_probability = 0.0
 
     # -- lifecycle -----------------------------------------------------------
     @staticmethod
@@ -151,7 +162,12 @@ class SimulationEngine:
         self.outcome = None
         self.active = True
         self.playing = True
+        self.trajectory = []
+        self._checkpoints = {}
+        self._pending_truncate = None
+        self._annotate_probabilities()
         self._begin_step(self.steps[0])
+        self._record_frame()
         return True
 
     def pause(self) -> None:
@@ -160,6 +176,18 @@ class SimulationEngine:
 
     def resume(self) -> None:
         if self.active and self.phase != "done":
+            # Resuming after a backward seek overwrites the abandoned future:
+            # frames past the restore point are dropped now (not at seek time,
+            # so scrubbing alone never destroys the recording), and stale
+            # checkpoints go with them — replay re-captures identical ones.
+            if self._pending_truncate is not None:
+                del self.trajectory[self._pending_truncate:]
+                self._checkpoints = {
+                    i: c for i, c in self._checkpoints.items() if i <= self.step_index
+                }
+                self._pending_truncate = None
+                # Re-seed the step-boundary frame the truncation just removed.
+                self._record_frame()
             self.playing = True
 
     def stop(self) -> None:
@@ -168,9 +196,57 @@ class SimulationEngine:
         self.phase = "idle"
         self.step_index = -1
         self.steps = []
+        self.trajectory = []
+        self._checkpoints = {}
+        self._pending_truncate = None
+        self._sequence_probability = 0.0
 
     def set_rate(self, rate: float) -> None:
         self.rate = _clamp(float(rate), 0.25, 4.0)
+
+    def seek_step(self, index: int) -> str | None:
+        """Jump to a step's start frame and pause there. Returns an error
+        reason, or None on success.
+
+        Restores the full engine checkpoint captured when the step began, so
+        resuming replays forward through the same deterministic engine —
+        scrubbing is state restore plus normal playback, never reverse physics.
+        Only steps that have actually played have a checkpoint; the forecast
+        tail is not seekable until the move reaches it.
+
+        The valid range spans the *recorded timeline*, not just the current
+        step list: seeking backward restores that moment's shorter forecast,
+        and steps the move actually played beyond it stay reachable through
+        their checkpoints (each checkpoint restores its own step list)."""
+        if not self.active:
+            return "no simulation is running"
+        hi = max(len(self.steps) - 1, max(self._checkpoints, default=-1))
+        if index < 0 or index > hi:
+            return f"step index {index} is out of range (0-{hi})"
+        cp = self._checkpoints.get(index)
+        if cp is None:
+            return f"step {index} has not played yet"
+        self.steps = [dict(s) for s in cp["steps"]]
+        self.step_index = cp["stepIndex"]
+        by_id = {p.id: p for p in self.players}
+        for pid, x, y, vx, vy in cp["players"]:
+            p = by_id.get(pid)
+            if p is not None:
+                p.x, p.y, p.vx, p.vy = x, y, vx, vy
+        self.ball = cp["ball"]
+        self._ball_target = cp["ballTarget"]
+        self._ball_speed = cp["ballSpeed"]
+        self._ball_origin = cp["ballOrigin"]
+        self._carrier_number = cp["carrier"]
+        self._settle_t = cp["settleT"]
+        self._carry_t = 0.0
+        self._stats = dict(cp["stats"])
+        self.phase = "settle"
+        self.outcome = None
+        self.playing = False
+        self._pending_truncate = cp["frame"]
+        self._annotate_probabilities()
+        return None
 
     # -- geometry helpers ----------------------------------------------------
     def _progress(self, x: float) -> float:
@@ -322,6 +398,7 @@ class SimulationEngine:
             "label": f"#{frm.number} → #{to.number}",
             "detail": self._pass_detail(frm, to, distance),
             "status": "pending",
+            "successProbability": self._pass_probability(frm, to),
         }
 
     def _shot_step(self, index: int, frm: _SimPlayer) -> dict:
@@ -335,7 +412,48 @@ class SimulationEngine:
             "label": f"#{frm.number} shoots",
             "detail": f"{distance:.0f} m strike on goal",
             "status": "pending",
+            "successProbability": self._shot_probability(frm),
         }
+
+    # -- probabilities -------------------------------------------------------
+    # Both numbers come from the analytics the rest of the app already trusts:
+    # passes are priced by the experimental pass-completion scorer, shots by
+    # the xG model. Nothing here invents a formula.
+    def _pass_probability(self, frm: _SimPlayer, to: _SimPlayer) -> float:
+        completion = pass_completion_probability(
+            self.players, frm, to, (frm.x, frm.y),
+            self.direction, self.pitch_length, self.pitch_width,
+        )
+        return round(completion, 3)
+
+    def _shot_probability(self, frm: _SimPlayer) -> float:
+        return round(
+            xg_value(frm.x, frm.y, self.direction,
+                     self.pitch_length, self.pitch_width), 3)
+
+    def _annotate_probabilities(self) -> None:
+        """Refresh each step's cumulative sequenceProbability.
+
+        Per-step probabilities are priced when a step is planned or rewritten
+        (positions at decision time); this only re-multiplies the chain so the
+        cumulative numbers stay consistent after any trim/extend/rewrite."""
+        running = 1.0
+        for s in self.steps:
+            running *= s.get("successProbability", 1.0)
+            s["sequenceProbability"] = round(running, 4)
+        self._sequence_probability = round(running, 4) if self.steps else 0.0
+
+    # -- recording -----------------------------------------------------------
+    def _record_frame(self) -> None:
+        """Append the current world to the trajectory buffer (one per tick)."""
+        if len(self.trajectory) >= MAX_TRAJECTORY_FRAMES:
+            return
+        self.trajectory.append({
+            "t": round(self._stats["elapsedS"], 3),
+            "step": self.step_index,
+            "ball": [round(self.ball[0], 2), round(self.ball[1], 2)],
+            "players": [[p.id, round(p.x, 2), round(p.y, 2)] for p in self.players],
+        })
 
     def _pass_detail(self, frm: _SimPlayer, to: _SimPlayer, distance: float) -> str:
         forward = self._progress(to.x) - self._progress(frm.x)
@@ -368,6 +486,21 @@ class SimulationEngine:
             step["fromNumber"] = self._carrier_number
         self.phase = "settle"
         self._settle_t = SETTLE_S
+        # Full engine checkpoint at the step boundary. seek_step restores one
+        # of these; the frame index ties it to the trajectory buffer.
+        self._checkpoints[step["index"]] = {
+            "frame": len(self.trajectory),
+            "steps": [dict(s) for s in self.steps],
+            "stepIndex": self.step_index,
+            "players": [(p.id, p.x, p.y, p.vx, p.vy) for p in self.players],
+            "ball": self.ball,
+            "ballTarget": self._ball_target,
+            "ballSpeed": self._ball_speed,
+            "ballOrigin": getattr(self, "_ball_origin", self.ball),
+            "carrier": self._carrier_number,
+            "settleT": self._settle_t,
+            "stats": dict(self._stats),
+        }
 
     def _select_receiver_live(self, carrier: _SimPlayer) -> _SimPlayer | None:
         """Best teammate to receive right now.
@@ -426,6 +559,7 @@ class SimulationEngine:
         # Rewrite this step to the shot it became and trim the forecast tail.
         self._rewrite_shot(step, carrier)
         self.steps = self.steps[: self.step_index + 1]
+        self._annotate_probabilities()
         self._ball_target = self._goal()
         self._ball_speed = BALL_SPEED_SHOT
         self.phase = "travel"
@@ -453,13 +587,17 @@ class SimulationEngine:
         distance = math.hypot(to.x - frm.x, to.y - frm.y)
         step.update(type="pass", fromNumber=frm.number, toNumber=to.number,
                     distanceM=round(distance, 1), label=f"#{frm.number} → #{to.number}",
-                    detail=self._pass_detail(frm, to, distance))
+                    detail=self._pass_detail(frm, to, distance),
+                    successProbability=self._pass_probability(frm, to))
+        self._annotate_probabilities()
 
     def _rewrite_shot(self, step: dict, frm: _SimPlayer) -> None:
         distance = self._dist_to_goal(frm.x, frm.y)
         step.update(type="shot", fromNumber=frm.number, toNumber=None,
                     distanceM=round(distance, 1), label=f"#{frm.number} shoots",
-                    detail=f"{distance:.0f} m strike on goal")
+                    detail=f"{distance:.0f} m strike on goal",
+                    successProbability=self._shot_probability(frm))
+        self._annotate_probabilities()
 
     def tick(self, dt: float) -> None:
         if not self.active or not self.playing or self.phase == "done":
@@ -598,6 +736,7 @@ class SimulationEngine:
             target = receiver or self._by_number(self._carrier_number)
             if target is not None:
                 self.steps.append(self._shot_step(self.step_index, target))
+                self._annotate_probabilities()
         self._begin_step(self.steps[self.step_index])
         self._recompute_derived()
 
@@ -703,6 +842,7 @@ class SimulationEngine:
 
     def _finish_tick(self, dt: float) -> None:
         self._recompute_derived()
+        self._record_frame()
 
     def write_back(self, players: Iterable[Any]) -> None:
         """Copy live sim positions onto the shared Player objects by id."""
@@ -714,6 +854,32 @@ class SimulationEngine:
             target.x, target.y = src.x, src.y
             target.vx, target.vy = src.vx, src.vy
 
+    def export_payload(self) -> dict | None:
+        """Serialise the recorded move for download.
+
+        Everything here already exists — the plan with its probabilities, the
+        team-level stats, and the tick-by-tick trajectory buffer. Returns None
+        when no simulation is active (stopped sims have cleared the buffer)."""
+        if not self.active:
+            return None
+        snap = self.snapshot()
+        by_id = {p.id: p for p in self.players}
+        return {
+            "attackingTeam": self.attacking_team,
+            "pitch": {"length": self.pitch_length, "width": self.pitch_width},
+            "outcome": self.outcome,
+            "sequenceProbability": self._sequence_probability,
+            "steps": snap["steps"],
+            "stats": snap["stats"],
+            "roster": [
+                {"id": p.id, "team": p.team, "number": p.number}
+                for p in by_id.values()
+            ],
+            # One frame per tick: elapsed seconds, step index, ball [x, y],
+            # players as [id, x, y]. Positions are pitch metres.
+            "trajectory": list(self.trajectory),
+        }
+
     def snapshot(self) -> dict:
         if not self.active:
             return {"active": False}
@@ -723,6 +889,13 @@ class SimulationEngine:
         stats["xtGained"] = round(stats["xtGained"], 3)
         stats["forwardProgressM"] = round(stats["forwardProgressM"], 1)
         stats["elapsedS"] = round(stats["elapsedS"], 1)
+        steps = []
+        for s in self.steps:
+            d = dict(s)
+            # A step is seekable once its start checkpoint exists; the panel
+            # uses this to know which steps can be jumped to.
+            d["reached"] = s["index"] in self._checkpoints
+            steps.append(d)
         return {
             "active": True,
             "playing": self.playing,
@@ -731,8 +904,13 @@ class SimulationEngine:
             "attackingTeam": self.attacking_team,
             "currentStep": self.step_index,
             "stepCount": len(self.steps),
-            "steps": [dict(s) for s in self.steps],
+            "steps": steps,
             "stats": stats,
             "ballOwnerNumber": self._carrier_number,
             "outcome": self.outcome,
+            "sequenceProbability": self._sequence_probability,
+            "trajectoryFrames": len(self.trajectory),
+            # Highest step start recorded so far — the scrub-forward horizon,
+            # which can exceed the restored forecast after a backward seek.
+            "maxReachedStep": max(self._checkpoints, default=-1),
         }

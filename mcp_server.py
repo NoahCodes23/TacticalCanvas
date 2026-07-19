@@ -116,6 +116,10 @@ _EXPERIMENT_ALIASES = {
     for alias in (name, *aliases)
 }
 
+# Speed notches for step_playback_speed. Matches the dashboard's own steps and
+# stays inside the server's 0.1-4.0 clamp.
+SPEED_LADDER = (0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0)
+
 # The dashboard's one-click demo buttons: experiment settings, plus whether to
 # play (True), pause (False), or leave playback alone (None).
 DEMO_PRESETS = {
@@ -155,6 +159,13 @@ ExperimentName = _enum(
 )
 PresetName = _enum(DEMO_PRESETS, "Which canned demo view to apply.")
 TeamName = _enum(("home", "away"), "Which side to coach.")
+SpeedStep = _enum(("faster", "slower"), "Which way to step the replay speed.")
+
+
+def _clock(media_time_ms: float) -> str:
+    """m:ss, so a spoken confirmation can name the moment."""
+    total = max(0, int(media_time_ms // 1000))
+    return f"{total // 60}:{total % 60:02d}"
 
 mcp = FastMCP("tacticalcanvas")
 
@@ -342,6 +353,57 @@ async def toggle_calibration() -> dict:
     on or off. Used when aligning the projector, not during tactical editing."""
     s = await _send_commands([_envelope("TOGGLE_CALIBRATION")])
     return {"calibrationOverlay": s["calibrationOverlay"]}
+
+
+@mcp.tool
+async def set_playback_speed(rate: float) -> dict:
+    """Set how fast the replay plays. 1.0 is normal speed, 0.5 is half speed,
+    2.0 is double. Clamped to 0.1-4.0. Use this when the coach names a speed
+    ('half speed', 'double speed', 'back to normal'); use step_playback_speed
+    for a bare 'faster' or 'slower'."""
+    s = await _send_commands([_envelope("SET_PLAYBACK_RATE", {"rate": float(rate)})])
+    return {"playbackRate": s["playbackRate"], "playing": s["playing"]}
+
+
+@mcp.tool
+async def step_playback_speed(direction: SpeedStep) -> dict:
+    """Make the replay one step faster or slower. Use this for a bare 'faster',
+    'slower', 'speed it up', 'slow it down' -- it reads the current speed and
+    moves one notch along 0.25, 0.5, 1, 1.5, 2, 3, 4, so it works without
+    knowing what the speed is now."""
+    want_faster = direction.strip().lower() in ("faster", "up", "quicker", "speed up")
+
+    def build(snapshot: dict) -> list[dict]:
+        current = float(snapshot.get("playbackRate") or 1.0)
+        if want_faster:
+            nxt = next((s for s in SPEED_LADDER if s > current + 1e-6), SPEED_LADDER[-1])
+        else:
+            nxt = next((s for s in reversed(SPEED_LADDER) if s < current - 1e-6), SPEED_LADDER[0])
+        if abs(nxt - current) < 1e-6:
+            return []  # already at the end of the ladder
+        return [_envelope("SET_PLAYBACK_RATE", {"rate": nxt})]
+
+    s = await _run_commands(build)
+    return {"playbackRate": s["playbackRate"]}
+
+
+@mcp.tool
+async def skip_time(seconds: float = 10.0) -> dict:
+    """Jump the replay forward or backward. Positive seconds skip forward,
+    negative skip back -- so 'skip ahead' is 10 and 'go back ten seconds' is
+    -10. Defaults to 10 seconds. Clamped at the start of the match."""
+    delta_ms = float(seconds) * 1000.0
+
+    def build(snapshot: dict) -> list[dict]:
+        target = max(0.0, float(snapshot.get("mediaTimeMs") or 0.0) + delta_ms)
+        return [_envelope("SEEK_TO", {"mediaTimeMs": target})]
+
+    s = await _run_commands(build)
+    return {
+        "mediaTimeMs": s["mediaTimeMs"],
+        "frameIndex": s["frameIndex"],
+        "clock": _clock(s["mediaTimeMs"]),
+    }
 
 
 @mcp.tool

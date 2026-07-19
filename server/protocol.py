@@ -33,6 +33,9 @@ CommandType = Literal[
     "RESUME_SIMULATION",        # {}
     "STOP_SIMULATION",          # {}  -- tear down, hand the pitch back to replay
     "SET_SIMULATION_RATE",      # {rate}  -- sim speed, clamped 0.25-4.0
+    "SIM_SEEK_STEP",            # {index}  -- jump to a played step's start, paused
+    "SIM_STEP_FORWARD",         # {}  -- seek to the next step's start, paused
+    "SIM_STEP_BACK",            # {}  -- seek to the previous step's start, paused
     "PING",                     # {t}  -- client clock, echoed back for RTT
 ]
 

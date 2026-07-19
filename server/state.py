@@ -304,6 +304,40 @@ class AppState:
         self.simulation.set_rate(rate)
         self._bump()
 
+    def seek_simulation_step(self, index: int) -> str | None:
+        """Jump the running sim to a step's start, paused there.
+
+        Returns an error reason (out-of-range, step not yet played, no sim) or
+        None on success. On success the engine's restored positions are written
+        back to the shared players immediately — the tick loop only writes back
+        while the sim is playing, and a seek lands paused."""
+        err = self.simulation.seek_step(index)
+        if err is None:
+            self.simulation.write_back(self.players)
+            self.ball = self.simulation.ball
+            self._bump()
+        return err
+
+    def step_simulation(self, delta: int) -> str | None:
+        """Seek one step forward/back from the current one; same contract."""
+        if not self.simulation.active:
+            return "no simulation is running"
+        return self.seek_simulation_step(self.simulation.step_index + delta)
+
+    def export_simulation(self) -> dict | None:
+        """The recorded move plus match context, or None when no sim runs."""
+        payload = self.simulation.export_payload()
+        if payload is None:
+            return None
+        return {
+            "kind": "tacticalcanvas.simulation",
+            "version": 1,
+            "matchId": self.match_id,
+            "matchLabel": self.match_label,
+            "exportedAtMs": now_ms(),
+            **payload,
+        }
+
     def set_playing(self, playing: bool) -> None:
         if self.simulation.active:
             # Starting replay abandons any running simulation.
