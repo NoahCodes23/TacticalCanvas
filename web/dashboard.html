@@ -449,6 +449,7 @@
             <span id="sim-rate">1×</span>
             <button id="sim-rate-up">+</button>
           </div>
+          <button id="sim-export" title="Export this move as JSON (plan, odds, stats, full trajectory)">⤓</button>
         </div>
       </div>
     </div>
@@ -918,6 +919,15 @@
     $("sim-stop").onclick = () => conn.send("STOP_SIMULATION");
     $("sim-step-back").onclick = () => conn.send("SIM_STEP_BACK");
     $("sim-step-fwd").onclick = () => conn.send("SIM_STEP_FORWARD");
+    $("sim-export").onclick = () => {
+      // Plain navigation download; the server sets Content-Disposition.
+      const a = document.createElement("a");
+      a.href = "/api/simulation/export";
+      a.download = "";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    };
     const SIM_RATES = [0.25, 0.5, 1, 1.5, 2, 3];
     const stepSimRate = (dir) => {
       const cur = state?.simulation?.rate ?? 1;

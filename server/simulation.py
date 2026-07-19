@@ -854,6 +854,32 @@ class SimulationEngine:
             target.x, target.y = src.x, src.y
             target.vx, target.vy = src.vx, src.vy
 
+    def export_payload(self) -> dict | None:
+        """Serialise the recorded move for download.
+
+        Everything here already exists — the plan with its probabilities, the
+        team-level stats, and the tick-by-tick trajectory buffer. Returns None
+        when no simulation is active (stopped sims have cleared the buffer)."""
+        if not self.active:
+            return None
+        snap = self.snapshot()
+        by_id = {p.id: p for p in self.players}
+        return {
+            "attackingTeam": self.attacking_team,
+            "pitch": {"length": self.pitch_length, "width": self.pitch_width},
+            "outcome": self.outcome,
+            "sequenceProbability": self._sequence_probability,
+            "steps": snap["steps"],
+            "stats": snap["stats"],
+            "roster": [
+                {"id": p.id, "team": p.team, "number": p.number}
+                for p in by_id.values()
+            ],
+            # One frame per tick: elapsed seconds, step index, ball [x, y],
+            # players as [id, x, y]. Positions are pitch metres.
+            "trajectory": list(self.trajectory),
+        }
+
     def snapshot(self) -> dict:
         if not self.active:
             return {"active": False}

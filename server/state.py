@@ -324,6 +324,20 @@ class AppState:
             return "no simulation is running"
         return self.seek_simulation_step(self.simulation.step_index + delta)
 
+    def export_simulation(self) -> dict | None:
+        """The recorded move plus match context, or None when no sim runs."""
+        payload = self.simulation.export_payload()
+        if payload is None:
+            return None
+        return {
+            "kind": "tacticalcanvas.simulation",
+            "version": 1,
+            "matchId": self.match_id,
+            "matchLabel": self.match_label,
+            "exportedAtMs": now_ms(),
+            **payload,
+        }
+
     def set_playing(self, playing: bool) -> None:
         if self.simulation.active:
             # Starting replay abandons any running simulation.

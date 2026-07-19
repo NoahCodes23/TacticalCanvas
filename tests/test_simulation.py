@@ -183,5 +183,31 @@ class SimulationSeekTests(unittest.TestCase):
         self.assertEqual(len(engine.trajectory), frames)
 
 
+class SimulationExportTests(unittest.TestCase):
+    def test_export_serialises_the_recorded_move(self):
+        engine = start_engine()
+        run_to_done(engine)
+        payload = engine.export_payload()
+        self.assertEqual(payload["attackingTeam"], "home")
+        self.assertEqual(payload["pitch"], {"length": 105.0, "width": 68.0})
+        self.assertEqual(len(payload["roster"]), 9)
+        self.assertEqual(len(payload["trajectory"]), len(engine.trajectory))
+        self.assertGreater(len(payload["trajectory"]), 10)
+        self.assertEqual(payload["sequenceProbability"], engine._sequence_probability)
+        self.assertEqual(
+            [s["label"] for s in payload["steps"]],
+            [s["label"] for s in engine.steps],
+        )
+        self.assertIn("passAccuracy", payload["stats"])
+        self.assertEqual(payload["outcome"], engine.outcome)
+
+    def test_export_is_none_when_inactive(self):
+        engine = SimulationEngine()
+        self.assertIsNone(engine.export_payload())
+        engine = start_engine()
+        engine.stop()
+        self.assertIsNone(engine.export_payload())
+
+
 if __name__ == "__main__":
     unittest.main()
